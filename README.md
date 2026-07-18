@@ -20,17 +20,20 @@ Or in `Package.swift`:
 
 Add exactly **one** product to your target:
 
-- **LeCodesSDK-full** — CreatorGL + filament (3D scenes & AR).
-- **LeCodesSDK-core** — UI only, ~15 MB smaller (no 3D/AR).
+- **LeCodesSDK-full** — everything: 3D scenes & AR (CreatorGL/filament, Jolt physics) + the 2D engine.
+- **LeCodesSDK-3d** — UI + 3D scenes & AR (Jolt physics included), without the 2D engine.
+- **LeCodesSDK-2d** — UI + the 2D engine (physics included), without 3D/AR — ~19 MB/slice smaller.
+- **LeCodesSDK-core** — UI only.
 
-Both vend the same module:
+All vend the same module:
 
 ```swift
 import LeCodesSDK
 ```
 
-## Resources (full variant only)
+## Resources (full and 3d variants)
 
-The full variant needs filament resources that SwiftPM can't deliver for a static
-framework. Download **LeCodesSDKResources.bundle** from the release assets and add
-it to your app target (**Copy Bundle Resources**). The core variant needs none.
+The 3D-bearing variants need filament resources that SwiftPM can't deliver for a
+static framework. Download **LeCodesSDKResources.bundle** from the release assets
+and add it to your app target (**Copy Bundle Resources**). The 2d and core
+variants need none.
