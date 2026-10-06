@@ -1,39 +1,42 @@
-# LeCodesSDK (iOS)
+# LeCodes (iOS)
 
-Binary distribution of the LeCodes iOS SDK for Swift Package Manager.
+The LeCodes iOS SDK as a Swift package: the Swift layer (the host over the runtime, the UIKit
+renderer, the AnyCanvas painter) as sources, the engine (the runtime, Filament, Jolt, the 2D engine…)
+as a binary target the manifest downloads. Built by `lecodes app` shells; any iOS app can embed it.
 
 ## Install
 
-In Xcode: **File ▸ Add Package Dependencies…** and enter:
-
-```
-https://github.com/letary/lecodes-ios-sdk.git
-```
-
+In Xcode: **File ▸ Add Package Dependencies…** and enter `https://github.com/letary/lecodes-ios-sdk.git`.
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/letary/lecodes-ios-sdk.git", from: "1.0.0")
+.package(url: "https://github.com/letary/lecodes-ios-sdk.git", exact: "2.0.7")
 ```
 
 ## Variants
 
-Add exactly **one** product to your target:
+A version is four tags of the same sources over four engines; pick the tag:
 
-- **LeCodesSDK-full** — everything: 3D scenes & AR (CreatorGL/filament, Jolt physics) + the 2D engine.
-- **LeCodesSDK-3d** — UI + 3D scenes & AR (Jolt physics included), without the 2D engine.
-- **LeCodesSDK-2d** — UI + the 2D engine (physics included), without 3D/AR — ~19 MB/slice smaller.
-- **LeCodesSDK-core** — UI only.
+| tag | engine |
+|---|---|
+| `2.0.7` | **full** — 3D scenes & AR (Filament, Jolt physics, navigation, networking, audio) + the 2D engine |
+| `2.0.7-3d` | 3D scenes & AR without the 2D engine |
+| `2.0.7-2d` | the 2D engine (Box2D physics) without 3D / AR |
+| `2.0.7-core` | UI only |
 
-All vend the same module:
+Products: `LeCodes` (the SDK — `LeCodesEngine`, `LeCodesView`, `LeCodesViewController`),
+`LeCodesAR` (ARKit behind the 3D scenes; full / 3d) and `LeCodesHRTF` (binaural audio filters, only
+where `engine.useHrtf()` is called). `LeCodesCore` and `LeCodesUIKit` are the layers under it.
 
 ```swift
-import LeCodesSDK
+import LeCodes
 ```
 
-## Resources (full and 3d variants)
+The 3D variants' resources (the ubershader archive, the IBL, the materials) ride inside the package as
+SwiftPM resources — nothing to add to the app target.
 
-The 3D-bearing variants need filament resources that SwiftPM can't deliver for a
-static framework. Download **LeCodesSDKResources.bundle** from the release assets
-and add it to your app target (**Copy Bundle Resources**). The 2d and core
-variants need none.
+## 1.x
+
+Releases up to 1.7.0 were four binary-only xcframeworks of the whole SDK (`LeCodesSDK-<variant>`,
+module `LeCodesSDK`); their tags stay. 2.x is a new contract (the runtime set's major): a 1.x shell
+keeps its pin until `lecodes app update` moves it.
