@@ -10,7 +10,7 @@ In Xcode: **File ▸ Add Package Dependencies…** and enter `https://github.com
 Or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/letary/lecodes-ios-sdk.git", exact: "2.0.7")
+.package(url: "https://github.com/letary/lecodes-ios-sdk.git", exact: "2.0.8")
 ```
 
 ## Variants
@@ -19,10 +19,10 @@ A version is four tags of the same sources over four engines; pick the tag:
 
 | tag | engine |
 |---|---|
-| `2.0.7` | **full** — 3D scenes & AR (Filament, Jolt physics, navigation, networking, audio) + the 2D engine |
-| `2.0.7-3d` | 3D scenes & AR without the 2D engine |
-| `2.0.7-2d` | the 2D engine (Box2D physics) without 3D / AR |
-| `2.0.7-core` | UI only |
+| `2.0.8` | **full** — 3D scenes & AR (Filament, Jolt physics, navigation, networking, audio) + the 2D engine |
+| `2.0.8-3d` | 3D scenes & AR without the 2D engine |
+| `2.0.8-2d` | the 2D engine (Box2D physics) without 3D / AR |
+| `2.0.8-core` | UI only |
 
 Products: `LeCodes` (the SDK — `LeCodesEngine`, `LeCodesView`, `LeCodesViewController`),
 `LeCodesAR` (ARKit behind the 3D scenes; full / 3d) and `LeCodesHRTF` (binaural audio filters, only
