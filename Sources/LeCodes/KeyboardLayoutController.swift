@@ -140,7 +140,7 @@ final class KeyboardLayoutController {
         return nil
     }
     private func isRoot(_ node: UINode) -> Bool {
-        host.currentScreen === node || host.widgetHost.contains(node) || UINodePager.isLivePage(node)
+        host.currentScreen === node || node is UINodeWidget || host.layerHost.contains(node) || UINodePager.isLivePage(node)
     }
 
     /// The view a root's keyboard overlap is measured against: the root view for the screen, the
@@ -149,7 +149,7 @@ final class KeyboardLayoutController {
     /// up), a page's cell-sized view.
     private func region(of root: UINode) -> UIView {
         if host.currentScreen === root { return host }
-        if host.widgetHost.contains(root) { return host.widgetHost.hostOf(root) ?? host }
+        if root is UINodeWidget { return root.view.superview ?? host }   // its outer root's view (a layer's, a screen's)
         return root.view
     }
 
@@ -250,7 +250,9 @@ final class KeyboardLayoutController {
     /// The runtime's frame pass lays every live root out with the shrink; a request makes it run.
     private func requestLayout(_ root: UINode) {
         FrameBatcher.request(root)
-        host.widgetHost.layoutAll()   // a widget root's out-of-band box goes through rootLayoutHeight
+        // the layers and the widgets, out of band like the screen: the shrunk one shorter (rootLayoutHeight)
+        Core.layoutOverlays(width: Float(host.bounds.width), height: Float(host.bounds.height))
+        host.layerHost.layoutAll()
     }
 
     /// The host's layout pass ran (the frames landed): the reveal that waited for it. The pass

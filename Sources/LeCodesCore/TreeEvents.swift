@@ -40,6 +40,7 @@ public enum TreeEvents {
     public static let TREE_EVENT_HOVER_MOVE = 33   // (0; x, y, dx, dy)
     public static let TREE_EVENT_HOVER_END = 34   // (0; x, y, dx, dy)
     public static let TREE_EVENT_HOVER_CANCEL = 35   // (0)
+    public static let TREE_EVENT_WIDGET_VISIBLE = 36   // (id; shown 1|0)
     // ---- setFlags(id, mask): listeners / traits the node has -------------------------------------
     // An INTERACTIVE node starts its own $hovered / $pressed / $focused scope: the engine cascades
     // an interaction class from a toggled ancestor down to it, never into it.

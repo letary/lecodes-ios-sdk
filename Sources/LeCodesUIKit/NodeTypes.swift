@@ -75,9 +75,10 @@ public final class UINodeText: UINode {
         }
         if r.dirty(B.lineClamp) { l.lineClamp = max(0, Int(r.float(W.lineClamp))) }
         if r.dirty(B.textOverflow) { l.clipsOverflow = CuiPaint.TextOverflow(rawValue: r.word(W.textOverflow)) == .clip }
+        if r.dirty(B.textWrap) { l.textWrap = CuiPaint.TextWrap(rawValue: r.word(W.textWrap)) ?? .wrap }
         if fontChanged { resolveFont() }
         if r.dirty(B.fontSize) || r.dirty(B.fontWeight) || r.dirty(B.fontStyle) || r.dirty(B.fontFamily) || r.dirty(B.lineHeight)
-            || r.dirty(B.letterSpacing) || r.dirty(B.lineClamp) || r.dirty(B.textOverflow) {
+            || r.dirty(B.letterSpacing) || r.dirty(B.lineClamp) || r.dirty(B.textOverflow) || r.dirty(B.textWrap) {
             FrameBatcher.request(self, measure: true)
         } else if r.anyDirty {
             label.setNeedsDisplay()
@@ -227,7 +228,11 @@ public final class UINodeWidget: UINodeContainer {
         o.backgroundColor = UIColor(rgba: color)
         o.place(parent.bounds)
         o.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        if o.superview !== parent { parent.insertSubview(o, belowSubview: view) }
+        // Directly behind the widget EVERY time, not only when the scrim is new: a show() moves the
+        // widget to the tail of its root's children (plan decision 8 — remove + insert, the view
+        // re-added above its new previous sibling), and a scrim left at the old index would sit
+        // under the widgets declared after it, which then paint over it undimmed.
+        parent.insertSubview(o, belowSubview: view)
     }
 
     public func removeOverlay() {
@@ -235,7 +240,7 @@ public final class UINodeWidget: UINodeContainer {
         overlay = nil
     }
 
-    /// Above the owner's content, the scrim directly behind, whatever order the views were added.
+    /// Above the parent's content, the scrim directly behind, whatever order the views were added.
     public func bringToFront() {
         guard let parent = view.superview else { return }
         if let overlay, overlay.superview === parent { parent.bringSubviewToFront(overlay) }
@@ -266,6 +271,20 @@ public final class UINodeWidget: UINodeContainer {
     /// the entrance. Outside the walk's dedupe on purpose (a pass reporting "unchanged" still owes it).
     override func layoutVisited() {
         sheet?.layoutDidApply()
+    }
+
+    /// Unmounted from its root (the runtime's removeNode: hidden by its display once the exit
+    /// landed, its page left, its screen covered): the scrim is no node's view, so the container's
+    /// remove does not take it — without this it stayed in the root's view, dimming the screen and
+    /// swallowing every touch after the dialog closed. The view itself persists (the node owns it)
+    /// and is re-added at the next mount, so a sheet owes its entrance again then and nothing of
+    /// its exit offset carries over (Android's `unmounted`, whose view is dropped with the node).
+    override func attached(to parent: UINodeContainer?) {
+        super.attached(to: parent)
+        if parent == nil {
+            removeOverlay()
+            sheet?.unmounted()
+        }
     }
 
     public override func onRemoved() {

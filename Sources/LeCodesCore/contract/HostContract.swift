@@ -92,8 +92,8 @@ public protocol HostUI: AnyObject {
     var viewVersion: ((String) -> Int32)? { get }
     /// Optional slot: nil = absent.
     var viewCall: ((Int32, String, WireIn, JSCallback, JSCallback) -> Void)? { get }
-    func widgetOpen(node: Int, ownerKind: UInt8, ownerId: Int32, ownerNode: Int)
-    func widgetClose(node: Int)
+    func layerOpen(node: Int)
+    func layerClose(node: Int)
     func registerFont(url: String, fontFamily: String, weight: Int32, style: Int32, onComplete: JSCallback, onReject: JSCallback)
     func showToast(message: String, duration: Int32)
     func getButtonPressed(node: Int) -> Bool
@@ -112,8 +112,6 @@ public protocol HostUI: AnyObject {
     /// Optional slot: nil = absent.
     var pagerDropPage: ((Int, Int) -> Void)? { get }
     /// Optional slot: nil = absent.
-    var pagerPageMounted: ((Int, Bool) -> Void)? { get }
-    /// Optional slot: nil = absent.
     var tweenClaim: ((Int, String, Int32, UnsafeBufferPointer<Float>, Float, Float, Int32, Bool, Float) -> Bool)? { get }
     /// Optional slot: nil = absent.
     var tweenRelease: ((Int, String, UInt8) -> Void)? { get }
@@ -128,7 +126,6 @@ public extension HostUI {
     var pagerCommand: ((Int, String, Bool) -> Void)? { nil }
     var pagerShowPage: ((Int, Int, Bool) -> Void)? { nil }
     var pagerDropPage: ((Int, Int) -> Void)? { nil }
-    var pagerPageMounted: ((Int, Bool) -> Void)? { nil }
     var tweenClaim: ((Int, String, Int32, UnsafeBufferPointer<Float>, Float, Float, Int32, Bool, Float) -> Bool)? { nil }
     var tweenRelease: ((Int, String, UInt8) -> Void)? { nil }
 }
@@ -153,6 +150,10 @@ public protocol HostApp: AnyObject {
     /// Optional slot: nil = absent.
     var setOrientation: ((String) -> Void)? { get }
     /// Optional slot: nil = absent.
+    var appVersion: (() -> String)? { get }
+    /// Optional slot: nil = absent.
+    var appBuild: (() -> Int32)? { get }
+    /// Optional slot: nil = absent.
     var worldChange: ((String?, Bool) -> Void)? { get }
     /// Optional slot: nil = absent.
     var exit: (() -> Void)? { get }
@@ -162,6 +163,8 @@ public extension HostApp {
     var isOnline: (() -> Bool)? { nil }
     var openUrl: ((String) -> Void)? { nil }
     var setOrientation: ((String) -> Void)? { nil }
+    var appVersion: (() -> String)? { nil }
+    var appBuild: (() -> Int32)? { nil }
     var worldChange: ((String?, Bool) -> Void)? { nil }
     var exit: (() -> Void)? { nil }
 }

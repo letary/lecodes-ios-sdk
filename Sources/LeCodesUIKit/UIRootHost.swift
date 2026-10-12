@@ -15,8 +15,6 @@ public protocol UIRootHost: AnyObject {
     func hideKeyboard()
     /// A navigation (a pager page change): hides the keyboard if an input holds focus.
     func dismissKeyboardForNavigation()
-    /// Widgets attached to a page follow a page appearing / disappearing.
-    func updateAttachedWidgets()
     /// The presented screen's root, nil while a scene / native view / video is the destination.
     var currentScreen: UINode? { get }
     /// A screen root's background color changed (a live re-theme): the root's backdrop and the

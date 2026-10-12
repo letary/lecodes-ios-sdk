@@ -143,9 +143,6 @@ final class PagerView: TouchScrollView, UIScrollViewDelegate, SystemBackSwipeDel
         }
         for v in subviews where v is NodeView { v.isHidden = !shown.contains(ObjectIdentifier(v)) }
         refreshPagingLock()
-        // The runtime's page-mounted hook fires while the page root is BUILT — before its view had
-        // a place. The pages have views now; a no-op once each widget is where it belongs.
-        root?.updateAttachedWidgets()
     }
 
     private func refreshPagingLock() {
@@ -244,7 +241,6 @@ final class PagerView: TouchScrollView, UIScrollViewDelegate, SystemBackSwipeDel
         page.updateLayout()
         for old in shown where !leaving.contains(where: { $0 === old }) { leaving.append(old) }
         refreshPagingLock()
-        root?.updateAttachedWidgets()
     }
 
     /// `page` left the top of its tab and its transition has landed: hidden. (The page the swipe

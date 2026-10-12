@@ -16,8 +16,8 @@ final class HostRendererServices: RendererServices {
     func openView(_ dest: PresentedDest, above: Bool) { engine?.rootView?.openDest(dest, above: above) }
     func dropView(_ dest: PresentedDest) { engine?.rootView?.dropDest(dest) }
     func closeView() { engine?.rootView?.closeDest() }
-    func widgetOpen(_ node: UINode, owner: WidgetOwner) { engine?.rootView?.widgetOpen(node, owner: owner) }
-    func widgetClose(_ node: UINode) { engine?.rootView?.widgetClose(node) }
+    func layerOpen(_ node: UINode) { engine?.rootView?.layerOpen(node) }
+    func layerClose(_ node: UINode) { engine?.rootView?.layerClose(node) }
     func nodeReleased(_ node: UINode) { engine?.rootView?.nodeReleased(node) }
 
     // MARK: - fonts: swap-not-await

@@ -41,6 +41,9 @@ public final class BoxPaint {
     /// The CSS matrix and origin the node carries (the pivot is size-dependent, so the applied
     /// transform is re-derived from the current bounds at every writer).
     private var matrix: CGAffineTransform?
+    /// The box part of `matrix` (a percent translate), folded against the current bounds at every
+    /// writer like the pivot — never into `matrix` itself, which must survive a resize.
+    private var box = Paint.TransformBox()
     private var origin = Paint.Origin()
     /// A translateY on top of the node's own transform — the sheet's detent offset (a pure
     /// transform, never a relayout); re-composed after every frame write.
@@ -74,6 +77,7 @@ public final class BoxPaint {
         if r.dirty(B.backgroundGradient) { applyGradient(p.backgroundGradient) }
         if r.dirty(B.transform) || r.dirty(B.transformOrigin) {
             matrix = p.transform
+            box = p.transformBox
             origin = p.transformOrigin
             applyTransform()
         }
@@ -419,9 +423,10 @@ public final class BoxPaint {
         return CGAffineTransform(translationX: -dx, y: -dy).concatenating(m).concatenating(CGAffineTransform(translationX: dx, y: dy))
     }
 
-    /// The node's transform (the pivot folded in) with the sheet offset on top.
+    /// The node's transform (the box part of a percent translate and the pivot folded in) with the
+    /// sheet offset on top.
     func composedTransform() -> CGAffineTransform {
-        matrix.map { composed($0) } ?? (offsetY != 0 ? CGAffineTransform(translationX: 0, y: offsetY) : .identity)
+        matrix.map { composed(box.fold($0, bounds.size)) } ?? (offsetY != 0 ? CGAffineTransform(translationX: 0, y: offsetY) : .identity)
     }
 
     /// Any matrix composed the way the node's own is (a claimed transform tween's samples,

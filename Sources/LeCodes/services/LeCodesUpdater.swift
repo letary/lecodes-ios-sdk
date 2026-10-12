@@ -11,12 +11,20 @@
 // by default the project's bundle on the platform, `/code/<uuid>.js?sdk=<version>`, the launcher's
 // own URL), or what the caller hands over. A store update always wins: each download records the
 // hash of the embedded bundle it was fetched on top of, and a cached update whose baseline no longer
-// matches the binary's embedded bundle is discarded. The runtime refuses a bundle of another
-// contract major on `run()`, so a wrong-major download never runs.
+// matches the binary's embedded bundle is discarded.
+//
+// What a download must be to replace the active bundle (the header lines every compiled bundle
+// opens with): the SAME contract major as this runtime (`// sdk:` — the platform serves one by
+// `?sdk=`, a custom url is one file, and the runtime would refuse another major on `run()`, which
+// is a blank app re-downloading the same file every launch), and NOT OLDER than the bundle running
+// now (`// last-updated:`, the compile time — a store build that ships newer code than the source
+// still holds must not be downgraded by its first launch). A refused download is not activated;
+// its ETag is kept so the next check still costs a 304.
 //
 // Swift + URLSession only: nothing of the engine. A `file://` source works (the dev loop, the tests).
 import CryptoKit
 import Foundation
+import LeCodesCore   // Core.sdkVersion: the contract major a download must match
 
 public enum LeCodesUpdater {
 
@@ -27,7 +35,47 @@ public enum LeCodesUpdater {
         case unconfigured          // no source URL
         case upToDate              // 304, or the same content as the one already active
         case updated               // a new bundle stored — runs on the next launch
+        case refused(String)       // the source serves a bundle this app must not run: another SDK major, or older than the active one
         case failed(String)        // a network / server problem — normal when offline
+    }
+
+    // MARK: - The bundle header (sdk/src/compile/header.ts)
+
+    /// `// sdk: <version>` and `// last-updated: <ISO date>` of a compiled bundle's first lines.
+    struct BundleHeader: Equatable {
+        var sdk: String?
+        var lastUpdated: String?
+    }
+
+    static func header(of data: Data) -> BundleHeader {
+        let head = String(decoding: data.prefix(2000), as: UTF8.self)
+        var h = BundleHeader()
+        for line in head.split(separator: "\n", omittingEmptySubsequences: false).prefix(16) {
+            if line.hasPrefix("// sdk: ") { h.sdk = String(line.dropFirst("// sdk: ".count)).trimmingCharacters(in: .whitespaces) }
+            else if line.hasPrefix("// last-updated: ") { h.lastUpdated = String(line.dropFirst("// last-updated: ".count)).trimmingCharacters(in: .whitespaces) }
+            else if !line.hasPrefix("//") { break }   // the header is the leading comment block
+        }
+        return h
+    }
+
+    /// The major of "X.Y.Z"; nil when the string is not a version (a pre-2.0 bundle has no line).
+    static func major(_ version: String?) -> Int? {
+        guard let version, let dot = version.firstIndex(of: "."), let n = Int(version[..<dot]) else { return nil }
+        return n
+    }
+
+    /// Why a downloaded bundle may not replace `active`; nil = it may. Both dates are
+    /// `Date.toISOString()` strings, so lexical order is time order; a bundle without a date (an
+    /// older compiler) is not held back by the rule.
+    static func refusal(of download: Data, over active: Data, runtime: String = Core.sdkVersion) -> String? {
+        let h = header(of: download)
+        guard let m = major(h.sdk), m == major(runtime) else {
+            return "the source serves a bundle of SDK \(h.sdk ?? "pre-2.0"), this app runs \(runtime)"
+        }
+        if let got = h.lastUpdated, let have = header(of: active).lastUpdated, got < have {
+            return "the source's bundle (\(got)) is older than the active one (\(have))"
+        }
+        return nil
     }
 
     private struct State: Codable {
@@ -143,9 +191,18 @@ public enum LeCodesUpdater {
                 onDone?(.failed("not a JS bundle (\(contentType))")); return
             }
 
-            let hash = sha256(data)
-            let active = (state?.baseline == baseline && state?.url == source.absoluteString)
-                ? state!.hash : baseline
+            // What runs now: the cached update when it is still this binary's, else the embedded bundle.
+            let usable = state?.baseline == baseline && state?.url == source.absoluteString
+            let cached: Data? = usable ? (try? Data(contentsOf: updateFile)).flatMap { sha256($0) == state!.hash ? $0 : nil } : nil
+            let activeData = cached ?? embeddedData
+            let active = usable ? state!.hash : baseline
+
+            // The download replaces the active bundle only when it is one this app may run (the header
+            // rules above); a refused one leaves the active bundle in place but keeps the new
+            // validators, so the next launch's check is still a 304 instead of the same download.
+            let why = refusal(of: data, over: activeData)
+            let stored = why == nil ? data : activeData
+            let hash = sha256(stored)
             let newState = State(
                 url: source.absoluteString, baseline: baseline, hash: hash,
                 etag: http?.value(forHTTPHeaderField: "ETag"),
@@ -155,8 +212,9 @@ public enum LeCodesUpdater {
                 try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
                 // Written even when identical to the embedded bundle: the state and the file must
                 // stay a pair, or the next activeBundle() would clear the state and forget the ETag.
-                try data.write(to: updateFile, options: .atomic)
+                try stored.write(to: updateFile, options: .atomic)
                 try JSONEncoder().encode(newState).write(to: stateFile, options: .atomic)
+                if let why { print("LeCodes: bundle update refused — \(why)"); onDone?(.refused(why)); return }
                 if hash != active { print("LeCodes: bundle update stored (\(data.count) bytes) — active on the next launch") }
                 onDone?(hash != active ? .updated : .upToDate)
             } catch {

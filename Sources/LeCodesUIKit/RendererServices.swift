@@ -13,7 +13,7 @@ import LeCodesCore
 import UIKit
 
 public protocol RendererServices: AnyObject {
-    // ---- presentation: HostUI's openView / dropView / closeView / widgets, for the host's navigator
+    // ---- presentation: HostUI's openView / dropView / closeView / layers, for the host's navigator
     /// Mount `dest` as the current destination, over what is shown or under it; what WAS shown
     /// stays mounted until its dropView (the runtime moves the screens meanwhile).
     func openView(_ dest: PresentedDest, above: Bool)
@@ -21,8 +21,11 @@ public protocol RendererServices: AnyObject {
     func dropView(_ dest: PresentedDest)
     /// Nothing is the current destination.
     func closeView()
-    func widgetOpen(_ node: UINode, owner: WidgetOwner)
-    func widgetClose(_ node: UINode)
+    /// A LAYER root is shown (HostUI.layerOpen): a pass-through root the runtime lays out at the
+    /// viewport, above every destination, whose children are widgets (docs/plans/widgets-plan.md).
+    func layerOpen(_ node: UINode)
+    /// The layer is hidden; its subtree stays (releaseNode says when it is gone).
+    func layerClose(_ node: UINode)
     /// The runtime freed `node` (HostUI.releaseNode): the host forgets it wherever it holds it.
     func nodeReleased(_ node: UINode)
     /// HostUI.registerFont — always settles the (onComplete, onReject) pair.
@@ -81,16 +84,4 @@ public struct PresentedDest {
     public init(kind: Int, node: UINode?, id: Int, viewName: String?, paramsJson: String?) {
         self.kind = kind; self.node = node; self.id = id; self.viewName = viewName; self.paramsJson = paramsJson
     }
-}
-
-/// A widget's attachTo owner — the widget is visible only while this destination is current. kind ==
-/// DestKind.none → unattached (a global overlay, always visible). For a screen / pager-page owner
-/// `node` is the owner's root; `id` is the sceneId / viewId of a scene / native owner.
-public struct WidgetOwner {
-    public let kind: Int
-    public let id: Int
-    public let node: UINode?
-    public init(kind: Int, id: Int, node: UINode?) { self.kind = kind; self.id = id; self.node = node }
-    public static let global = WidgetOwner(kind: DestKind.none, id: 0, node: nil)
-    public var isGlobal: Bool { kind == DestKind.none }
 }

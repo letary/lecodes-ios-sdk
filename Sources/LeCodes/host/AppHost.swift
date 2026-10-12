@@ -19,4 +19,9 @@ final class AppHost: HostApp {
     /// "landscape" | "portrait" | "auto" (unknown → auto). The JS thread is the main thread.
     var setOrientation: ((String) -> Void)? { { mode in OrientationLock.apply(OrientationLock(rawValue: mode) ?? .auto) } }
     var worldChange: ((String?, Bool) -> Void)? { { [weak self] uuid, trusted in self?.engine?.onWorldChange(uuid, trusted) } }
+    // app.host.version / app.host.build — the installed app's CFBundleShortVersionString /
+    // CFBundleVersion (what a `lecodes app` shell takes from app.json). An OTA bundle reads them to
+    // branch on the native side; a non-numeric CFBundleVersion reads as 0.
+    var appVersion: (() -> String)? { { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" } }
+    var appBuild: (() -> Int32)? { { Int32((Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap { Int($0) } ?? 0) } }
 }

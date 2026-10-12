@@ -14,7 +14,11 @@ final class WidgetView: ScreenView {
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         if let hit = super.hitTest(point, with: event) { return hit }
-        let claims = widget?.sheet != nil
+        // A widget with an overlay layer claims its own body too (decision 13 of the widgets plan,
+        // the rule of web-canvas's hitTestEx and tgfx's backdrop walk: inside the widget's box a
+        // non-interactive spot is CONSUMED, outside it is the overlay tap). Left unclaimed, a tap
+        // on a dialog's text fell through to the scrim directly behind it and dismissed the dialog.
+        let claims = widget?.sheet != nil || widget?.overlay != nil
         return claims && bounds.contains(point) && !isHidden && alpha >= 0.01 && isUserInteractionEnabled ? self : nil
     }
 }
@@ -137,6 +141,16 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
             guard let self, self.targetIndex >= 0 else { return }
             self.animate(to: self.offset(forDetent: self.targetIndex), damping: 0.9, beginFromCurrent: false)
         }
+    }
+
+    /// The widget left its root (UINodeWidget.attached(to: nil)): the entrance is owed again at the
+    /// next mount's first laid-out frame, and the exit's offset (the slide below the edge) must not
+    /// be what the re-shown sheet re-composes to — the view persists on this host, so the offset is
+    /// put back to the base frame here, not dropped with a view. Android's twin.
+    func unmounted() {
+        view.layer.removeAnimation(forKey: "transform")   // a settle / slide-out still in flight
+        entrancePlayed = false
+        applyOffset(0)
     }
 
     /// The programmatic target (`sheetDetent`). Never fires the detent event.

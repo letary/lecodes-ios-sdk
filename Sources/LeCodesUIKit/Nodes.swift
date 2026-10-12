@@ -30,6 +30,7 @@ public enum Nodes {
         case "button": return UINodeButton(id: id, type: type)
         case "screen": return UINodeScreen(id: id, type: type)
         case "widget": return UINodeWidget(id: id, type: type)
+        case "layer": return UINodeScreen(id: id, type: type)   // a pass-through root the runtime shows above the destinations (LayerHost)
         case "scrollable", "scrollableScreen": return UINodeScrollable(id: id, type: type)
         case "vlist": return UINodeVList(id: id, type: type)
         case "pager": return UINodePager(id: id, type: type)

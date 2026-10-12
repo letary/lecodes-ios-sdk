@@ -26,11 +26,18 @@ public struct PaintRecord {
     public var anyDirty: Bool { base[CuiPaint.dirtyLo] != 0 || base[CuiPaint.dirtyHi] != 0 }
     public func string(_ w: Int) -> String { CreatorUI.string(base[w]) }
     public func gradient(_ w: Int) -> Gradient? { CreatorUI.gradient(base[w]) }
-    /// The 3x3 transform (column-major in the record) as an affine transform, nil for identity.
+    /// The 3x3 transform (column-major in the record) as an affine transform, nil for identity — the
+    /// matrix alone; `transformBox` reads the box part the record carries beside it.
     public func transform(_ w: Int) -> CGAffineTransform? {
         let a = float(w), b = float(w + 1), c = float(w + 3), d = float(w + 4), tx = float(w + 6), ty = float(w + 7)
         if a == 1, b == 0, c == 0, d == 1, tx == 0, ty == 0 { return nil }
         return CGAffineTransform(a: CGFloat(a), b: CGFloat(b), c: CGFloat(c), d: CGFloat(d), tx: CGFloat(tx), ty: CGFloat(ty))
+    }
+    /// The box part of the transform (words 9..12): a translate in PERCENTS of the node's own box as
+    /// Δ(x, y) per point of the box's width, then per point of its height — added to the matrix's
+    /// translation against the laid-out box when the transform is applied.
+    public func transformBox(_ w: Int) -> Paint.TransformBox {
+        Paint.TransformBox(wx: CGFloat(float(w + 9)), wy: CGFloat(float(w + 10)), hx: CGFloat(float(w + 11)), hy: CGFloat(float(w + 12)))
     }
 }
 

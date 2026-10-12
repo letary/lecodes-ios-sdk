@@ -4,8 +4,8 @@
 // record's memory (little-endian, 4-byte words): word offsets, mask bits, enum codes.
 
 public enum CuiPaint {
-    public static let words = 78
-    public static let bytes = 312
+    public static let words = 84
+    public static let bytes = 336
     public static let presentLo = 0, presentHi = 1, dirtyLo = 2, dirtyHi = 3
 
     public enum Bit {
@@ -55,23 +55,24 @@ public enum CuiPaint {
         public static let textDecoration = 43
         public static let lineClamp = 44
         public static let textOverflow = 45
-        public static let objectFit = 46
-        public static let placeholder = 47
-        public static let type = 48
-        public static let enterKey = 49
-        public static let autocapitalize = 50
-        public static let autocorrect = 51
-        public static let maxLength = 52
-        public static let keyboardShrink = 53
-        public static let keyboardDismiss = 54
-        public static let showScrollbar = 55
-        public static let overscrollMode = 56
-        public static let keyboardDismissMode = 57
-        public static let snap = 58
-        public static let sheetDetents = 59
-        public static let sheetDetent = 60
-        public static let sheetDismissible = 61
-        public static let dim = 62
+        public static let textWrap = 46
+        public static let objectFit = 47
+        public static let placeholder = 48
+        public static let type = 49
+        public static let enterKey = 50
+        public static let autocapitalize = 51
+        public static let autocorrect = 52
+        public static let maxLength = 53
+        public static let keyboardShrink = 54
+        public static let keyboardDismiss = 55
+        public static let showScrollbar = 56
+        public static let overscrollMode = 57
+        public static let keyboardDismissMode = 58
+        public static let snap = 59
+        public static let sheetDetents = 60
+        public static let sheetDetent = 61
+        public static let sheetDismissible = 62
+        public static let dim = 63
     }
 
     public enum Word {
@@ -109,35 +110,36 @@ public enum CuiPaint {
         public static let borderBottomLeftRadius = 35
         public static let opacity = 36
         public static let transform = 37
-        public static let transformOrigin = 46
-        public static let pointerEvents = 50
-        public static let fontSize = 51
-        public static let fontWeight = 52
-        public static let fontStyle = 53
-        public static let fontFamily = 54
-        public static let lineHeight = 55
-        public static let letterSpacing = 56
-        public static let textAlign = 57
-        public static let textDecoration = 58
-        public static let lineClamp = 59
-        public static let textOverflow = 60
-        public static let objectFit = 61
-        public static let placeholder = 62
-        public static let type = 63
-        public static let enterKey = 64
-        public static let autocapitalize = 65
-        public static let autocorrect = 66
-        public static let maxLength = 67
-        public static let keyboardShrink = 68
-        public static let keyboardDismiss = 69
-        public static let showScrollbar = 70
-        public static let overscrollMode = 71
-        public static let keyboardDismissMode = 72
-        public static let snap = 73
-        public static let sheetDetents = 74
-        public static let sheetDetent = 75
-        public static let sheetDismissible = 76
-        public static let dim = 77
+        public static let transformOrigin = 50
+        public static let pointerEvents = 54
+        public static let fontSize = 55
+        public static let fontWeight = 56
+        public static let fontStyle = 57
+        public static let fontFamily = 58
+        public static let lineHeight = 59
+        public static let letterSpacing = 60
+        public static let textAlign = 61
+        public static let textDecoration = 62
+        public static let lineClamp = 63
+        public static let textOverflow = 64
+        public static let textWrap = 65
+        public static let objectFit = 66
+        public static let placeholder = 67
+        public static let type = 68
+        public static let enterKey = 69
+        public static let autocapitalize = 70
+        public static let autocorrect = 71
+        public static let maxLength = 72
+        public static let keyboardShrink = 73
+        public static let keyboardDismiss = 74
+        public static let showScrollbar = 75
+        public static let overscrollMode = 76
+        public static let keyboardDismissMode = 77
+        public static let snap = 78
+        public static let sheetDetents = 79
+        public static let sheetDetent = 80
+        public static let sheetDismissible = 81
+        public static let dim = 82
     }
 
     public enum Display: UInt32 {
@@ -166,6 +168,9 @@ public enum CuiPaint {
     }
     public enum TextOverflow: UInt32 {
         case ellipsis = 0, clip = 1
+    }
+    public enum TextWrap: UInt32 {
+        case wrap = 0, nowrap = 1, balance = 2, pretty = 3
     }
     public enum ObjectFit: UInt32 {
         case cover = 0, contain = 1, fill = 2
@@ -200,6 +205,7 @@ public enum CuiPaint {
         public static let textAlign = ["start", "center", "end", "left", "right"]
         public static let textDecoration = ["underline", "line-through", "none"]
         public static let textOverflow = ["ellipsis", "clip"]
+        public static let textWrap = ["wrap", "nowrap", "balance", "pretty"]
         public static let objectFit = ["cover", "contain", "fill"]
         public static let type = ["text", "password", "tel", "email", "number", "decimal", "url", "search", "date", "time"]
         public static let enterKey = ["done", "go", "next", "search", "send"]

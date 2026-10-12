@@ -63,6 +63,8 @@ final class TextLabel: UIView {
     var lineClamp = 0 { didSet { if lineClamp != oldValue { invalidate() } } }
     /// textOverflow: clip cuts the clamped text, else an ellipsis ends it.
     var clipsOverflow = false { didSet { if clipsOverflow != oldValue { invalidate() } } }
+    /// textWrap: how a paragraph breaks into lines (see `lines(maxWidth:)`).
+    var textWrap: CuiPaint.TextWrap = .wrap { didSet { if textWrap != oldValue { invalidate() } } }
     /// The core's padding: the text lays out and draws inside it.
     var inset = UIEdgeInsets.zero { didSet { if inset != oldValue { setNeedsDisplay() } } }
 
@@ -132,7 +134,10 @@ final class TextLabel: UIView {
         CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) - CGFloat(CTLineGetTrailingWhitespaceWidth(line))
     }
 
-    /// The lines at `maxWidth` (infinite = no wrapping), clamped; memoised on the width.
+    /// The lines in a box `maxWidth` wide (infinite = no wrapping), clamped; memoised on the width.
+    /// `textWrap` decides the soft breaks (`breakRanges`); `nowrap` takes none at any width, and a
+    /// line of its wider than a finite box ends with an ellipsis (clip lets it run past) — the
+    /// measure asks with an infinite width, so the box is the whole line and nothing is fitted there.
     func lines(maxWidth: CGFloat) -> [Line] {
         if cachedWidth == maxWidth { return cachedLines }
         let text = attributedString()
@@ -141,28 +146,30 @@ final class TextLabel: UIView {
         if length > 0 {
             let typesetter = CTTypesetterCreateWithAttributedString(text)
             let nsText = text.string as NSString
-            var index = 0
-            let width = maxWidth.isFinite && maxWidth > 0 ? Double(maxWidth) : Double.greatestFiniteMagnitude
-            while index < length {
-                let count = max(1, CTTypesetterSuggestLineBreak(typesetter, index, width))
-                let clamped = lineClamp > 0 && out.count == lineClamp - 1 && index + count < length
-                if clamped {
+            let nowrap = textWrap == .nowrap
+            let width = maxWidth.isFinite && maxWidth > 0 && !nowrap ? Double(maxWidth) : Double.greatestFiniteMagnitude
+            let ranges = breakRanges(typesetter, nsText, length: length, width: width)
+            let cut = lineClamp > 0 && ranges.count > lineClamp
+            for (i, range) in ranges.enumerated() {
+                if cut && i == lineClamp - 1 {
                     // The last kept line carries the REST of the text so the ellipsis stands for all of it.
-                    let rest = CTTypesetterCreateLine(typesetter, CFRange(location: index, length: length - index))
-                    var last = rest
+                    var last = CTTypesetterCreateLine(typesetter, CFRange(location: range.location, length: length - range.location))
                     if clipsOverflow {
-                        last = CTTypesetterCreateLine(typesetter, CFRange(location: index, length: count))
+                        last = CTTypesetterCreateLine(typesetter, range)
                     } else if maxWidth.isFinite {
-                        let token = CTLineCreateWithAttributedString(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: index, effectiveRange: nil)))
-                        if let t = CTLineCreateTruncatedLine(rest, Double(maxWidth), .end, token) { last = t }
+                        last = truncated(last, text: text, at: range.location, width: maxWidth)
+                    } else {
+                        // Unconstrained (intrinsic): nothing to fit into — the ellipsis just ends the line.
+                        last = ellipsisLine(text, range: range)
                     }
                     out.append(Line(line: last, width: Self.visibleWidth(last)))
-                    index = length
                     break
                 }
-                let line = CTTypesetterCreateLine(typesetter, CFRange(location: index, length: count))
+                var line = CTTypesetterCreateLine(typesetter, range)
+                if nowrap, !clipsOverflow, maxWidth.isFinite, Self.visibleWidth(line) > maxWidth {
+                    line = truncated(line, text: text, at: range.location, width: maxWidth)
+                }
                 out.append(Line(line: line, width: Self.visibleWidth(line)))
-                index += count
             }
             // A trailing hard break opens an empty last line (the desktop's wrapText does the same).
             if nsText.hasSuffix("\n"), lineClamp == 0 || out.count < lineClamp {
@@ -175,11 +182,123 @@ final class TextLabel: UIView {
         return out
     }
 
+    /// `line` ended with "…" inside `width` (CoreText's end truncation).
+    private func truncated(_ line: CTLine, text: NSAttributedString, at index: Int, width: CGFloat) -> CTLine {
+        let token = CTLineCreateWithAttributedString(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: index, effectiveRange: nil)))
+        return CTLineCreateTruncatedLine(line, Double(width), .end, token) ?? line
+    }
+
+    /// The text of `range` (less its trailing spaces and hard break) followed by "…", as one line.
+    private func ellipsisLine(_ text: NSAttributedString, range: CFRange) -> CTLine {
+        let s = NSMutableAttributedString(attributedString: text.attributedSubstring(from: NSRange(location: range.location, length: range.length)))
+        let ns = s.string as NSString
+        var end = ns.length
+        while end > 0, let scalar = Unicode.Scalar(ns.character(at: end - 1)), scalar == "\n" || scalar == " " || scalar == "\t" { end -= 1 }
+        if end < ns.length { s.deleteCharacters(in: NSRange(location: end, length: ns.length - end)) }
+        s.append(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: range.location, effectiveRange: nil)))
+        return CTLineCreateWithAttributedString(s)
+    }
+
+    /// `balance` evens out paragraphs of up to this many lines (CSS limits it the same way).
+    private static let balanceMaxLines = 10
+
+    /// The line ranges of the text at `width` per `textWrap`: CTTypesetter's greedy breaks (a hard
+    /// break ends a line in every mode), reworked per paragraph for balance / pretty by the desktop's
+    /// rules (renderers/tgfx ui_text.cpp): balance = the narrowest whole-pt width that keeps the
+    /// paragraph's line count (paragraphs of 2…10 lines), pretty = the last word of the line before
+    /// moves down when the last line is one word and the pair fits. A paragraph the clamp cuts stays
+    /// greedy, and so does everything after.
+    private func breakRanges(_ typesetter: CTTypesetter, _ nsText: NSString, length: Int, width: Double) -> [CFRange] {
+        var out: [CFRange] = []
+        var shape = (textWrap == .balance || textWrap == .pretty) && width < Double.greatestFiniteMagnitude
+        var index = 0
+        while index < length {
+            // The paragraph: up to and including the next hard break.
+            let nl = nsText.range(of: "\n", options: [], range: NSRange(location: index, length: length - index))
+            let end = nl.location == NSNotFound ? length : nl.location + 1
+            var lines = Self.greedy(typesetter, from: index, to: end, width: width)
+            if shape {
+                if lineClamp > 0, out.count + lines.count > lineClamp { shape = false }
+                else if textWrap == .balance { lines = balance(typesetter, nsText, lines, from: index, to: end, width: width) }
+                else { lines = pretty(typesetter, nsText, lines, width: width) }
+            }
+            out.append(contentsOf: lines)
+            index = end
+        }
+        return out
+    }
+
+    /// The typesetter's greedy breaks of `[start, end)` at `width`.
+    private static func greedy(_ typesetter: CTTypesetter, from start: Int, to end: Int, width: Double) -> [CFRange] {
+        var out: [CFRange] = []
+        var index = start
+        while index < end {
+            let count = max(1, min(end - index, CTTypesetterSuggestLineBreak(typesetter, index, width)))
+            out.append(CFRange(location: index, length: count))
+            index += count
+        }
+        return out
+    }
+
+    /// A binary search over whole points: the line count never grows with the width, and from the
+    /// widest word up no word is broken, so the search only moves breaks between words. Whole points
+    /// keep the measure (searching down from the constraint) and the draw (down from the box, a width
+    /// in between) on the same breaks.
+    private func balance(_ typesetter: CTTypesetter, _ nsText: NSString, _ greedy: [CFRange], from start: Int, to end: Int, width: Double) -> [CFRange] {
+        let n = greedy.count
+        if n < 2 || n > Self.balanceMaxLines { return greedy }
+        let count = { (w: Int) -> Int in Self.greedy(typesetter, from: start, to: end, width: Double(w)).count }
+        var hi = Int(width.rounded(.down))
+        if count(hi) != n { return greedy }
+        var lo = 0
+        var wordStart = start
+        while wordStart < end {
+            let space = nsText.range(of: " ", options: [], range: NSRange(location: wordStart, length: end - wordStart))
+            let wordEnd = space.location == NSNotFound ? end : space.location
+            if wordEnd > wordStart {
+                let word = CTTypesetterCreateLine(typesetter, CFRange(location: wordStart, length: wordEnd - wordStart))
+                lo = max(lo, Int(Self.visibleWidth(word).rounded(.up)))
+            }
+            wordStart = wordEnd + 1
+        }
+        if lo >= hi { return greedy }
+        if count(lo) == n { hi = lo }
+        else {
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2
+                if count(mid) == n { hi = mid } else { lo = mid }
+            }
+        }
+        return Self.greedy(typesetter, from: start, to: end, width: Double(hi))
+    }
+
+    private func pretty(_ typesetter: CTTypesetter, _ nsText: NSString, _ greedy: [CFRange], width: Double) -> [CFRange] {
+        let n = greedy.count
+        if n < 2 { return greedy }
+        let lastRange = greedy[n - 1], prevRange = greedy[n - 2]
+        let last = nsText.substring(with: NSRange(location: lastRange.location, length: lastRange.length)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if last.isEmpty || last.contains(" ") { return greedy }
+        // The line before, less its trailing spaces: its last space is the new break.
+        let prev = nsText.substring(with: NSRange(location: prevRange.location, length: prevRange.length)) as NSString
+        var prevEnd = prev.length
+        while prevEnd > 0, prev.character(at: prevEnd - 1) == 0x20 { prevEnd -= 1 }
+        let cut = prev.range(of: " ", options: .backwards, range: NSRange(location: 0, length: prevEnd)).location
+        if cut == NSNotFound || cut == 0 { return greedy }
+        let joinedStart = prevRange.location + cut + 1
+        let joined = CFRange(location: joinedStart, length: lastRange.location + lastRange.length - joinedStart)
+        if Self.visibleWidth(CTTypesetterCreateLine(typesetter, joined)) > CGFloat(width) { return greedy }
+        var out = Array(greedy.dropLast(2))
+        out.append(CFRange(location: prevRange.location, length: cut + 1))
+        out.append(joined)
+        return out
+    }
+
     /// The yoga measure: the widest line and lineHeight × lines within the width constraint (mode
     /// 0 / NaN = unconstrained). The height constraint never cuts lines: overflow is visible, as CSS.
     func measure(width: Float, widthMode: UInt8, height: Float, heightMode: UInt8) -> CGSize {
-        let maxWidth = widthMode == 0 || width.isNaN ? CGFloat.infinity : CGFloat(width)
-        let ls = lines(maxWidth: maxWidth)
+        let constraint = widthMode == 0 || width.isNaN ? CGFloat.infinity : CGFloat(width)
+        // nowrap: the box is the intrinsic width — the lines are measured unconstrained.
+        let ls = lines(maxWidth: textWrap == .nowrap ? .infinity : constraint)
         if ls.isEmpty { return .zero }
         let widest = ls.reduce(CGFloat(0)) { max($0, $1.width) }
         let scale = layer.contentsScale > 0 ? layer.contentsScale : 1

@@ -107,7 +107,11 @@ open class UINode {
         if r.dirty(B.backgroundImage) { paint.backgroundImage = r.string(W.backgroundImage) }
         if r.dirty(B.backgroundSize) { paint.backgroundSize = CuiPaint.BackgroundSize(rawValue: r.word(W.backgroundSize)) ?? .cover }
         if r.dirty(B.backgroundGradient) { paint.backgroundGradient = r.gradient(W.backgroundGradient) }
-        if r.dirty(B.transform) { paint.transform = r.transform(W.transform) }
+        if r.dirty(B.transform) {
+            // a transform that is only a percent translate is the identity + a box part: still a transform
+            paint.transformBox = r.transformBox(W.transform)
+            paint.transform = r.transform(W.transform) ?? (paint.transformBox.isZero ? nil : .identity)
+        }
         if r.dirty(B.transformOrigin) {
             // The core dispatches a percentage axis as 0..100 (the registry default "50% 50%" arrives
             // as 50, like tgfx / Android read it); the box folds a FRACTION of its size into the
@@ -216,8 +220,27 @@ public struct Paint {
     public var opacity: CGFloat = 1
     public var display: CuiPaint.Display = .flex
     public var overflow: CuiPaint.Overflow = .visible
-    /// nil = identity.
+    /// nil = identity (the box part included: a transform that is only a percent translate is `.identity` here).
     public var transform: CGAffineTransform?
+    /// The box part of `transform` — a translate in PERCENTS of the node's own box: Δ(x, y) per
+    /// point of the box's width, then per point of its height (the core turned the percent through
+    /// the functions after it, so adding it to the translation is exact for any list). Folded against
+    /// the box where the transform is applied (NodeView), like a fractional origin.
+    public struct TransformBox: Equatable {
+        public var wx: CGFloat = 0, wy: CGFloat = 0, hx: CGFloat = 0, hy: CGFloat = 0
+        public init() {}
+        public init(wx: CGFloat, wy: CGFloat, hx: CGFloat, hy: CGFloat) { self.wx = wx; self.wy = wy; self.hx = hx; self.hy = hy }
+        public var isZero: Bool { wx == 0 && wy == 0 && hx == 0 && hy == 0 }
+        /// `m` for a box of `size`: the part folded into the translation.
+        public func fold(_ m: CGAffineTransform, _ size: CGSize) -> CGAffineTransform {
+            if isZero { return m }
+            var r = m
+            r.tx += size.width * wx + size.height * hx
+            r.ty += size.width * wy + size.height * hy
+            return r
+        }
+    }
+    public var transformBox = TransformBox()
     public var transformOrigin = Origin()
     public var pointerEvents = true
     public init() {}

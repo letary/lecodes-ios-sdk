@@ -137,8 +137,11 @@ public enum Core {
     /// The one root laid out `overlap` px shorter (the focused input's); 0 / <= 0 clears.
     public static func setShrunkRoot(_ root: Int, overlap: Float) { lc_setShrunkRoot(node(root), overlap) }
     public static func rootLayoutHeight(_ root: Int, height: Float) -> Float { lc_rootLayoutHeight(node(root), height) }
+    /// The overlays' layout pass alone: the layers at the viewport, every mounted widget at its outer root's box.
+    public static func layoutOverlays(width: Float, height: Float) { lc_layoutOverlays(width, height) }
+    /// Is a widget with an overlay layer on screen? The system's back swipe is off while one is.
+    public static func backSwipeBlocked() -> Bool { lc_backSwipeBlocked() }
     /// The box an attached widget root lays out at; w or h <= 0 clears.
-    public static func setWidgetBox(_ root: Int, width: Float, height: Float) { lc_setWidgetBox(node(root), width, height) }
 
     public static func pagerLayoutPages(_ pager: Int, width: Float, height: Float) { lc_pagerLayoutPages(node(pager), width, height) }
     public static func pagerDidSelect(_ pager: Int, index: Int) { lc_pagerDidSelect(node(pager), Int32(index)) }

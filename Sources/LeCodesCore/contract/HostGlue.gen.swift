@@ -120,8 +120,8 @@ enum HostGlue {
         if t.isViewSupported != nil { c.pointee.isViewSupported = { a0 in return HostGlue.t_ui!.isViewSupported!(HostGlue.string(a0)) } }
         if t.viewVersion != nil { c.pointee.viewVersion = { a0 in return HostGlue.t_ui!.viewVersion!(HostGlue.string(a0)) } }
         if t.viewCall != nil { c.pointee.viewCall = { a0, a1, a2, a3, a4 in HostGlue.t_ui!.viewCall!(a0, HostGlue.string(a1), WireIn(a2), a3, a4) } }
-        c.pointee.widgetOpen = { a0, a1, a2, a3 in HostGlue.t_ui!.widgetOpen(node: Int(bitPattern: a0), ownerKind: a1, ownerId: a2, ownerNode: Int(bitPattern: a3)) }
-        c.pointee.widgetClose = { a0 in HostGlue.t_ui!.widgetClose(node: Int(bitPattern: a0)) }
+        c.pointee.layerOpen = { a0 in HostGlue.t_ui!.layerOpen(node: Int(bitPattern: a0)) }
+        c.pointee.layerClose = { a0 in HostGlue.t_ui!.layerClose(node: Int(bitPattern: a0)) }
         c.pointee.registerFont = { a0, a1, a2, a3, a4, a5 in HostGlue.t_ui!.registerFont(url: HostGlue.string(a0), fontFamily: HostGlue.string(a1), weight: a2, style: a3, onComplete: a4, onReject: a5) }
         c.pointee.showToast = { a0, a1 in HostGlue.t_ui!.showToast(message: HostGlue.string(a0), duration: a1) }
         c.pointee.getButtonPressed = { a0 in return HostGlue.t_ui!.getButtonPressed(node: Int(bitPattern: a0)) }
@@ -133,7 +133,6 @@ enum HostGlue {
         if t.pagerCommand != nil { c.pointee.pagerCommand = { a0, a1, a2 in HostGlue.t_ui!.pagerCommand!(Int(bitPattern: a0), HostGlue.string(a1), a2) } }
         if t.pagerShowPage != nil { c.pointee.pagerShowPage = { a0, a1, a2 in HostGlue.t_ui!.pagerShowPage!(Int(bitPattern: a0), Int(bitPattern: a1), a2) } }
         if t.pagerDropPage != nil { c.pointee.pagerDropPage = { a0, a1 in HostGlue.t_ui!.pagerDropPage!(Int(bitPattern: a0), Int(bitPattern: a1)) } }
-        if t.pagerPageMounted != nil { c.pointee.pagerPageMounted = { a0, a1 in HostGlue.t_ui!.pagerPageMounted!(Int(bitPattern: a0), a1) } }
         if t.tweenClaim != nil { c.pointee.tweenClaim = { a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 in return HostGlue.t_ui!.tweenClaim!(Int(bitPattern: a0), HostGlue.string(a1), a2, UnsafeBufferPointer(start: a3, count: Int(a4)), a5, a6, a7, a8, a9) } }
         if t.tweenRelease != nil { c.pointee.tweenRelease = { a0, a1, a2 in HostGlue.t_ui!.tweenRelease!(Int(bitPattern: a0), HostGlue.string(a1), a2) } }
     }
@@ -159,6 +158,8 @@ enum HostGlue {
         if t.isOnline != nil { c.pointee.isOnline = { return HostGlue.t_app!.isOnline!() } }
         if t.openUrl != nil { c.pointee.openUrl = { a0 in HostGlue.t_app!.openUrl!(HostGlue.string(a0)) } }
         if t.setOrientation != nil { c.pointee.setOrientation = { a0 in HostGlue.t_app!.setOrientation!(HostGlue.string(a0)) } }
+        if t.appVersion != nil { c.pointee.appVersion = { return HostGlue.cString(HostGlue.t_app!.appVersion!()) ?? strdup("") } }
+        if t.appBuild != nil { c.pointee.appBuild = { return HostGlue.t_app!.appBuild!() } }
         if t.worldChange != nil { c.pointee.worldChange = { a0, a1 in HostGlue.t_app!.worldChange!(a0.map { String(cString: $0) }, a1) } }
         if t.exit != nil { c.pointee.exit = { HostGlue.t_app!.exit!() } }
     }

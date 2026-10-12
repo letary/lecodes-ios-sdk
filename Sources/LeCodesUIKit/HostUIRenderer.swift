@@ -35,6 +35,9 @@ public final class HostUIRenderer: HostUI {
     public func insertNode(parent: Int, child: Int, index: UInt16) {
         guard let c = Nodes[child] else { return }
         attach(parent, c, Int(index))
+        // A widget child (docs/plans/widgets-plan.md): mounted under its outer root by the runtime;
+        // its overlay layer is a sibling view under it, made once the widget's view has a superview.
+        (c as? UINodeWidget)?.applyOverlay()
     }
 
     public func removeNode(parent: Int, child: Int) {
@@ -87,15 +90,14 @@ public final class HostUIRenderer: HostUI {
         }
     }
 
-    public func widgetOpen(node: Int, ownerKind: UInt8, ownerId: Int32, ownerNode: Int) {
-        guard let widget = Nodes[node] else { return }
-        let owner = Int(ownerKind) == DestKind.none ? WidgetOwner.global : WidgetOwner(kind: Int(ownerKind), id: Int(ownerId), node: Nodes[ownerNode])
-        services.widgetOpen(widget, owner: owner)
+    public func layerOpen(node: Int) {
+        guard let layer = Nodes[node] else { return }
+        services.layerOpen(layer)
     }
 
-    public func widgetClose(node: Int) {
-        guard let widget = Nodes[node] else { return }
-        services.widgetClose(widget)
+    public func layerClose(node: Int) {
+        guard let layer = Nodes[node] else { return }
+        services.layerClose(layer)
     }
 
     public func registerFont(url: String, fontFamily: String, weight: Int32, style: Int32, onComplete: JSCallback, onReject: JSCallback) {
@@ -145,12 +147,6 @@ public final class HostUIRenderer: HostUI {
             pager.pagerView.dropPage(page)
         }
     }
-    /// A page root was attached / released — every tab, not just the visible one: the widgets
-    /// attached to a page mount INTO it, and a page appearing is invisible to the destination model.
-    public var pagerPageMounted: ((Int, Bool) -> Void)? {
-        { _, _ in (UINode.appRoot as? UIRootHost)?.updateAttachedWidgets() }
-    }
-
     /// The runtime's one vlist call: `animated` false = anchoring / a clamp (buffered, applied after
     /// the content height), true = a user scroll command.
     public func vlistScroll(node: Int, scrollY: Float, animated: Bool) {

@@ -1,12 +1,12 @@
 // The root view of the iOS host — the twin of hosts/android's LeCodesView: the app-root coordinate
-// space (what widgets position in and getBoundingRect reports against), the view the presented
+// space (what the layers and widgets position in and getBoundingRect reports against), the view the presented
 // destination's view is mounted under, the renderer's per-frame layout pass (Core.layoutFrame over
 // every live root → LayoutBatch → the apply walk from the roots), the safe-area pushes, the
 // `resize` rule, the keyboard (KeyboardLayoutController), the toasts, and the pointer entry a
 // check runner drives (the same hit-test a UITouch goes through). Layering invariant, like
 // Android's: surface-backed destinations (the 3D scene's Metal layer, the 2D scene's surface, a
 // native view, a promoted video) at the bottom and never animated, screens above them (the only
-// side a transition moves), widgets on top.
+// side a transition moves), the layers on top.
 //
 // One destination is current at a time (the runtime owns the stack). This view animates no change
 // of destination itself: a transition is the runtime's tween tracks on the two screen roots' own
@@ -55,10 +55,10 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
     /// the close (nothing will drop it), by the posted flush.
     private var pendingSurfaceRelease = false
     private var lastSize = CGSize.zero
-    private lazy var widgets = WidgetHost(root: self)
-    var widgetHost: WidgetHost { widgets }
+    private lazy var layers = LayerHost(root: self)
+    var layerHost: LayerHost { layers }
     lazy var keyboard = KeyboardLayoutController(host: self)
-    /// The presented destination's kind and id (a scene / native / video owner of a widget).
+    /// The presented destination's kind and id.
     private(set) var destKind: Int = DestKind.none
     private(set) var destId: Int = 0
     /// The system's swipe over this view, when it is mounted with one (LeCodesViewController):
@@ -128,7 +128,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         surfaceView?.place(bounds)
         pushSafeArea()
         if let screen = currentScreen { FrameBatcher.request(screen) }
-        widgets.layoutAll()
+        layers.layoutAll()
         keyboard.applyKeyboardLayout()   // the overlaps are geometry
     }
 
@@ -191,7 +191,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
             leaveScreen()
             print("[LeCodesView] unknown destination kind \(dest.kind)")
         }
-        widgets.updateAttached()
+        layers.bringToFront()   // the layers over the screen just mounted
     }
 
     /// The runtime dropped the destination that left: its transition landed (or none played). A
@@ -247,7 +247,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         // the bottom whatever is asked.
         if let shown, !above, shown.superview === self { insertSubview(newView, belowSubview: shown) } else { addSubview(newView) }
         node.updateLayout()
-        widgets.bringGlobalsToFront()
+        layers.bringToFront()
     }
 
     /// UIRootHost: a screen's background changed (a live re-theme). The presented one moves the
@@ -459,7 +459,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
     /// answers at the release). A shown widget's handler, a non-screen destination, the router's
     /// root name nothing: no swipe.
     var canSystemBack: Bool {
-        guard swiped == nil, currentScreen != nil else { return false }
+        guard swiped == nil, currentScreen != nil, !Core.backSwipeBlocked() else { return false }   // a scrim on screen: the back is the widget's
         switch Core.backTarget() {
         case .router(let revealed), .handler(let revealed):
             return revealed != 0 && Nodes[revealed].map { $0 !== currentScreen } ?? false
@@ -527,18 +527,14 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         destId = 0
         keyboard.dismissKeyboardForNavigation()
         leaveScreen()
-        widgets.updateAttached()
     }
 
-    // MARK: - widgets
+    // MARK: - layers (docs/plans/widgets-plan.md: the app layer, a surface's content)
 
-    func widgetOpen(_ node: UINode, owner: WidgetOwner) {
-        guard let widget = node as? UINodeWidget else { return }
-        widgets.open(widget, owner: owner)
-    }
-    func widgetClose(_ node: UINode) { widgets.close(node) }
-    /// The open widgets' roots, in open order.
-    public var openWidgets: [UINode] { widgets.roots }
+    func layerOpen(_ node: UINode) { layers.open(node) }
+    func layerClose(_ node: UINode) { layers.close(node) }
+    /// The open layers' roots, in open order.
+    public var openLayers: [UINode] { layers.roots }
 
     /// The runtime freed a node: forget it wherever it is held.
     func nodeReleased(_ node: UINode) {
@@ -546,7 +542,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         if currentScreen === node { leaveScreen() }
         // …and a screen that was still leaving goes with its node
         if node is UINodeScreen, node.view.superview === self { node.view.removeFromSuperview() }
-        if widgets.contains(node) { widgets.close(node) }
+        if layers.contains(node) { layers.close(node) }
         if surfaceOwner === node { surfaceOwner = nil }
     }
 
@@ -564,7 +560,6 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
     public func onInputBlurred(_ input: UINodeInput) { keyboard.onInputBlurred(input) }
     public func hideKeyboard() { keyboard.hideKeyboard() }
     public func dismissKeyboardForNavigation() { keyboard.dismissKeyboardForNavigation() }
-    public func updateAttachedWidgets() { widgets.updateAttached() }
     public var presentingViewController: UIViewController? {
         var r: UIResponder? = next
         while let cur = r {

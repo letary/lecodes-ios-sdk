@@ -21,8 +21,8 @@ public final class HeadlessUI: HostUI {
     public func openView(kind: UInt8, node: Int, id: Int32, viewName: String, paramsJson: String, above: Bool) {}
     public func dropView(kind: UInt8, node: Int, id: Int32) {}
     public func closeView() {}
-    public func widgetOpen(node: Int, ownerKind: UInt8, ownerId: Int32, ownerNode: Int) {}
-    public func widgetClose(node: Int) {}
+    public func layerOpen(node: Int) {}
+    public func layerClose(node: Int) {}
     /// A font is "registered" at once: nothing measures with it here.
     public func registerFont(url: String, fontFamily: String, weight: Int32, style: Int32, onComplete: JSCallback, onReject: JSCallback) {
         Core.resolve(onComplete, reject: onReject)
