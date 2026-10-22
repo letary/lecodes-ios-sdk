@@ -1,10 +1,10 @@
 // The `gl` table (gl.d.ts) of the rendered host — the twin of hosts/android's GLHost.kt: the scene
 // view's lifetime hooks (the swap chain is the view's, LeCodesView mounts it as the presented
 // surface), the textures the platform decodes (ImageIO → the engine's bitmap upload; KTX2 through
-// the engine's own transcoder), a media player's frames as a texture, and AR over the registered
-// controller kinds. Filament creates its own Metal engine (`init()`): no getGLContext here, and
-// nothing to re-bind on engineCreated but a mounted scene view's swap chain. HeadlessGL is the
-// engine-only twin (no swap chain to present, no textures).
+// the engine's own transcoder), a media player's frames as a texture. Filament creates its own
+// Metal engine (`init()`): no getGLContext here, and nothing to re-bind on engineCreated but a
+// mounted scene view's swap chain. AR is not here: it is a plugin, over the gl facade (scene/GL.swift).
+// HeadlessGL is the engine-only twin (no swap chain to present, no textures).
 import Foundation
 import LeCodesCore
 
@@ -15,10 +15,10 @@ final class GLHost: HostGL {
     private(set) var isSceneOpen = false
 
     /// The swap chain died with the rebuilt engine: a mounted scene view makes a new one. So did
-    /// the scene / texture ids an AR session from before writes to every camera frame.
+    /// the textures the gl facade handed out (their ids restart in the new engine).
     var engineCreated: (() -> Void)? {
         { [weak self] in
-            self?.resetAR()
+            self?.engine?.gl.engineRebuilt()
             self?.engine?.rootView?.sceneView?.createSwapChain()
         }
     }
@@ -71,68 +71,9 @@ final class GLHost: HostGL {
         }
     }
 
-    /// A media player's frames as an engine texture (an external texture the players pump every
-    /// frame); 0 = no such player / no engine.
+    /// A media player's frames as an engine texture (an external texture of the gl facade the
+    /// players pump every frame); 0 = no such player / no engine.
     var createMediaPlayerTexture: ((Int32) -> Int32)? {
         { [weak self] playerId in Int32(truncatingIfNeeded: self?.engine?.media.players.createTexture(playerId) ?? 0) }
-    }
-
-    // MARK: - AR
-
-    /// The controller kinds the embedder registered (LeCodesEngine.registerARController), by mode.
-    var controllerFactories: [String: () -> ARController] = [:]
-    /// One controller per scene that asked for one (createARController), started by launchAR.
-    private var controllers: [UInt32: ARController] = [:]
-    /// The running session, if any.
-    private(set) var arController: ARController?
-
-    var createARController: ((UInt32, UInt32, String) -> Void)? {
-        { [weak self] sceneId, cameraId, mode in
-            guard let self else { return }
-            guard let factory = controllerFactories[mode] else {
-                print("[ar] ARController '\(mode)' is not registered (LeCodesEngine.registerARController)")
-                return
-            }
-            let controller = factory()
-            controller.sceneId = sceneId
-            controller.cameraEntityId = cameraId
-            controllers[sceneId] = controller
-        }
-    }
-    var createRootAnchor: ((UInt32, UInt32) -> Void)? {
-        { [weak self] sceneId, entityId in self?.controllers[sceneId]?.createRootAnchor(entityId) }
-    }
-    var createAnchor: ((UInt32, UInt32, Float, Int32) -> Void)? {
-        { [weak self] sceneId, entityId, physicalWidth, systemId in
-            guard let data = Buffers.get(systemId) else { print("[ar] createAnchor: no buffer \(systemId)"); return }
-            self?.controllers[sceneId]?.createAnchor(entityId, data, physicalWidth)
-        }
-    }
-    var launchAR: ((UInt32, JSCallback, JSCallback) -> Void)? {
-        { [weak self] sceneId, onComplete, onReject in
-            guard let self, let controller = controllers[sceneId] else {
-                Core.reject(onComplete, reject: onReject, message: "ARController for scene \(sceneId) is not created")
-                return
-            }
-            arController?.stop()
-            arController = controller
-            controller.start({ Core.resolve(onComplete, reject: onReject) },
-                             { message in Core.reject(onComplete, reject: onReject, message: message) })
-        }
-    }
-    var stopAR: (() -> Void)? {
-        { [weak self] in
-            self?.arController?.stop()
-            self?.arController = nil
-        }
-    }
-
-    /// The running session ends, the controllers go: at a world swap (an AR scene left by
-    /// Router.pop or by the swap keeps the session running, writing into the next world's engine),
-    /// at an engine rebuild, at teardown.
-    func resetAR() {
-        arController?.stop()
-        arController = nil
-        controllers.removeAll()
     }
 }

@@ -469,6 +469,9 @@ open class NodeView: UIView {
         self.node = node
         super.init(frame: .zero)
         isUserInteractionEnabled = true
+        // TouchPipeline tracks pointers individually; UIKit must deliver the
+        // second finger to the same button/screen for pinch gestures to work.
+        isMultipleTouchEnabled = true
         clipsToBounds = false
     }
     @available(*, unavailable) public required init?(coder: NSCoder) { nil }

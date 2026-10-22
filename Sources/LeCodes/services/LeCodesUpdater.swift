@@ -1,17 +1,26 @@
 // Native (JS-free) over-the-air updates of the bundle a shell runs — the 1.x updater, carried over.
 //
-// The app always launches from a LOCAL bundle — a previously downloaded update in Application
-// Support, or the embedded app.js — so an offline launch never changes. `checkForUpdate` then asks
-// the source URL for newer code with a conditional GET (unchanged code costs a ~0-byte 304); a fresh
-// bundle is written atomically and runs on the NEXT launch. Call it BEFORE running the bundle: a
-// broken JS update can crash the app all it wants, the next launch still fetches the fix (App Store
-// §3.3.1B: interpreted code, downloaded by the app's own native code).
+// The app launches from a LOCAL bundle — a previously downloaded update in Application Support, or
+// the embedded app.js — so an offline launch never changes. `checkForUpdate` asks the source URL
+// for newer code with a conditional GET (unchanged code costs a ~0-byte 304); a fresh bundle is
+// written atomically and is what the next `activeBundle()` returns. A shell (LeCodesShell.boot)
+// reads the local bundle FIRST, then starts the check BEFORE anything runs: a broken JS update can
+// crash the app all it wants, the next launch still fetches the fix (App Store §3.3.1B:
+// interpreted code, downloaded by the app's own native code). On the first launch of a binary (no
+// usable state — `hasUsableState`) the shell waits for that check, a few seconds at most, and runs
+// what it stored; every later launch runs the local bundle at once and a download applies on the
+// next one.
 //
 // The source: `LeCodesUpdateURL` of Info.plist (`lecodes app sync` writes it from app.json "update" —
 // by default the project's bundle on the platform, `/code/<uuid>.js?sdk=<version>`, the launcher's
-// own URL), or what the caller hands over. A store update always wins: each download records the
-// hash of the embedded bundle it was fetched on top of, and a cached update whose baseline no longer
-// matches the binary's embedded bundle is discarded.
+// own URL), or what the caller hands over. The state belongs to one binary and one source: each
+// download records the hash of the embedded bundle it was fetched on top of (its baseline) and its
+// URL. A store update changes the embedded bundle; the cached update then survives only when it is
+// intact, one this runtime may run (the rules below, over the NEW embedded bundle) and STRICTLY
+// newer than it by `// last-updated:` (equal or missing dates → the embedded bundle). A kept update
+// is re-baselined onto the new binary with its validators, so the next check still costs a 304.
+// Otherwise it is discarded — a store build compiled after the OTA push carries a newer date and
+// wins, so a store release still fixes a broken OTA. A changed source URL discards it as well.
 //
 // What a download must be to replace the active bundle (the header lines every compiled bundle
 // opens with): the SAME contract major as this runtime (`// sdk:` — the platform serves one by
@@ -31,10 +40,10 @@ public enum LeCodesUpdater {
     /// The Info.plist key holding the update URL. Absent → every check is a no-op.
     public static let infoPlistKey = "LeCodesUpdateURL"
 
-    public enum UpdateResult: Equatable {
+    public enum UpdateResult: Equatable, Sendable {
         case unconfigured          // no source URL
         case upToDate              // 304, or the same content as the one already active
-        case updated               // a new bundle stored — runs on the next launch
+        case updated               // a new bundle stored — what the next activeBundle() returns
         case refused(String)       // the source serves a bundle this app must not run: another SDK major, or older than the active one
         case failed(String)        // a network / server problem — normal when offline
     }
@@ -78,9 +87,18 @@ public enum LeCodesUpdater {
         return nil
     }
 
+    /// Whether a cached update outlives a store update that changed the embedded bundle: one this
+    /// runtime may run over the NEW embedded bundle (`refusal` nil — the same major, not older) and
+    /// STRICTLY newer than it. An equal or a missing date keeps the store build's code.
+    static func survives(_ cached: Data, over embedded: Data, runtime: String = Core.sdkVersion) -> Bool {
+        guard refusal(of: cached, over: embedded, runtime: runtime) == nil,
+              let got = header(of: cached).lastUpdated, let have = header(of: embedded).lastUpdated else { return false }
+        return got > have
+    }
+
     private struct State: Codable {
         var url: String            // the source the cached update came from
-        var baseline: String       // sha256 of the EMBEDDED bundle at download time
+        var baseline: String       // sha256 of the EMBEDDED bundle at download time (or the one it was re-baselined onto)
         var hash: String           // sha256 of the cached update.js
         var etag: String?
         var lastModified: String?
@@ -126,36 +144,69 @@ public enum LeCodesUpdater {
     // MARK: - The launch path (local reads only)
 
     /// The bundle the app should run: the cached update when it is still valid for this binary
-    /// (the same embedded baseline, the same source URL, an intact file), else the embedded
-    /// bundle. Never touches the network. nil = no embedded bundle at all.
+    /// (the same source URL, an intact file, the same embedded baseline — or, after a store
+    /// update, newer code than the new embedded bundle, which it is then re-baselined onto), else
+    /// the embedded bundle. Never touches the network. nil = no embedded bundle at all.
     public static func activeBundle(embeddedAt url: URL? = nil, source: URL? = nil) -> String? {
+        activeBundle(embeddedAt: url, source: source, runtime: Core.sdkVersion)
+    }
+
+    static func activeBundle(embeddedAt url: URL?, source: URL?, runtime: String) -> String? {
         guard let embeddedURL = url ?? embeddedBundleURL,
               let embeddedData = try? Data(contentsOf: embeddedURL),
               let embedded = String(data: embeddedData, encoding: .utf8) else { return nil }
 
-        guard let state = loadState() else { return embedded }
+        guard var state = loadState() else { return embedded }
 
-        // A store update changed the embedded bundle → it supersedes any older download. A changed
-        // source URL likewise invalidates what the old source delivered.
-        if state.baseline != sha256(embeddedData) || state.url != (source ?? configuredURL)?.absoluteString {
-            clearUpdate()
-            return embedded
-        }
-
-        guard let cachedData = try? Data(contentsOf: updateFile),
+        // A changed source URL invalidates what the old source delivered.
+        guard state.url == (source ?? configuredURL)?.absoluteString,
+              let cachedData = try? Data(contentsOf: updateFile),
               sha256(cachedData) == state.hash,                    // integrity: a partial / corrupt file
               let cached = String(data: cachedData, encoding: .utf8) else {
             clearUpdate()
             return embedded
         }
+
+        // A store update changed the embedded bundle: the download outlives it only as newer code
+        // this runtime may run, re-baselined onto the new binary (the validators kept: the next
+        // check is still a 304). Else the store build wins.
+        let baseline = sha256(embeddedData)
+        if state.baseline != baseline {
+            guard survives(cachedData, over: embeddedData, runtime: runtime) else {
+                clearUpdate()
+                return embedded
+            }
+            state.baseline = baseline
+            try? JSONEncoder().encode(state).write(to: stateFile, options: .atomic)
+            print("LeCodes: the cached update (\(header(of: cachedData).lastUpdated ?? "")) is newer than the new embedded bundle — kept")
+        }
         return cached
+    }
+
+    /// Whether the update state belongs to THIS binary and source: the cached update was fetched on
+    /// top of this embedded bundle (or re-baselined onto it by `activeBundle`) from this URL. A
+    /// check revalidates only against such a state (it sends the validators), and a shell's boot
+    /// reads its absence as the first launch of this binary. Read it AFTER `activeBundle()`, which
+    /// migrates or clears the state a store update left. False with no source or no embedded bundle.
+    public static func hasUsableState(embeddedAt url: URL? = nil, source: URL? = nil) -> Bool {
+        guard let source = source ?? configuredURL,
+              let embeddedURL = url ?? embeddedBundleURL,
+              let embeddedData = try? Data(contentsOf: embeddedURL) else { return false }
+        return isUsable(loadState(), baseline: sha256(embeddedData), source: source)
+    }
+
+    /// THE notion of a usable state (hasUsableState, checkForUpdate): this baseline, this source.
+    private static func isUsable(_ state: State?, baseline: String, source: URL) -> Bool {
+        guard let state else { return false }
+        return state.baseline == baseline && state.url == source.absoluteString
     }
 
     // MARK: - The background check
 
     /// Ask the source for newer code (a conditional GET: ~0 bytes when unchanged). A new bundle is
-    /// stored atomically and used on the NEXT launch. Failures are silent no-ops — offline is a
-    /// normal state, the local bundle keeps running.
+    /// stored atomically: the next `activeBundle()` returns it (a shell's first launch runs it at
+    /// once, every later launch on the next one). Failures are silent no-ops — offline is a normal
+    /// state, the local bundle keeps running. `onDone` is called on a background queue.
     public static func checkForUpdate(url: URL? = nil, embeddedAt: URL? = nil,
                                       onDone: (@Sendable (UpdateResult) -> Void)? = nil) {
         guard let source = url ?? configuredURL else { onDone?(.unconfigured); return }
@@ -169,7 +220,8 @@ public enum LeCodesUpdater {
         request.cachePolicy = .reloadIgnoringLocalCacheData   // our own conditional logic below
         let state = loadState()
         // Only revalidate against a cache that is actually usable for this binary + URL.
-        if let state, state.url == source.absoluteString, state.baseline == baseline {
+        let usable = isUsable(state, baseline: baseline, source: source)
+        if usable, let state {
             if let etag = state.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
             if let lm = state.lastModified { request.setValue(lm, forHTTPHeaderField: "If-Modified-Since") }
         }
@@ -192,7 +244,6 @@ public enum LeCodesUpdater {
             }
 
             // What runs now: the cached update when it is still this binary's, else the embedded bundle.
-            let usable = state?.baseline == baseline && state?.url == source.absoluteString
             let cached: Data? = usable ? (try? Data(contentsOf: updateFile)).flatMap { sha256($0) == state!.hash ? $0 : nil } : nil
             let activeData = cached ?? embeddedData
             let active = usable ? state!.hash : baseline
@@ -215,7 +266,7 @@ public enum LeCodesUpdater {
                 try stored.write(to: updateFile, options: .atomic)
                 try JSONEncoder().encode(newState).write(to: stateFile, options: .atomic)
                 if let why { print("LeCodes: bundle update refused — \(why)"); onDone?(.refused(why)); return }
-                if hash != active { print("LeCodes: bundle update stored (\(data.count) bytes) — active on the next launch") }
+                if hash != active { print("LeCodes: bundle update stored (\(data.count) bytes)") }
                 onDone?(hash != active ? .updated : .upToDate)
             } catch {
                 onDone?(.failed("store failed: \(error.localizedDescription)"))

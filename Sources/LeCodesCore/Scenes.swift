@@ -1,6 +1,7 @@
-// The scene half of the C face (lecodes-core.h): what the 3D view, the textures, the AR controller
-// and creator-2d's Metal arm call — the twin of core-jni.cpp's 3D / AR / creator-2d natives. Every
-// call on the JS (= main) thread; each is an inline no-op in a variant without the engine behind it.
+// The scene half of the C face (lecodes-core.h): what the 3D view, the textures, the gl facade (LeCodes'
+// GL — what a plugin's half drives the engine through) and creator-2d's Metal arm call — the twin of
+// core-jni.cpp's 3D / creator-2d natives. Every call on the JS (= main) thread; each is a no-op in a
+// variant without the engine behind it.
 import CLeCodesCore
 import CoreVideo
 import Foundation
@@ -40,40 +41,66 @@ public extension Core {
     static func textureSize(_ textureId: UInt32) -> (width: Int, height: Int) {
         (Int(lc_textureWidth(textureId)), Int(lc_textureHeight(textureId)))
     }
-    /// A texture the host streams frames into (a video output, the AR camera); 0 without the engine.
-    static func createExternalTexture() -> UInt32 { lc_createExternalTexture() }
+    /// A texture the host streams frames into (a video output, a camera); nil without the engine.
+    static func createExternalTexture() -> UInt32? {
+        let id = lc_createExternalTexture()
+        return id == UInt32.max ? nil : id
+    }
     static func updateTexture(_ textureId: UInt32, pixelBuffer: CVPixelBuffer) {
         lc_updateTextureFromPixelBuffer(textureId, Unmanaged.passUnretained(pixelBuffer).toOpaque())
     }
+    /// Free a texture the host made: at once when nothing samples it, else when the last user lets go.
+    static func destroyTexture(_ textureId: UInt32) { lc_destroyTexture(textureId) }
 
-    // MARK: - AR (the ARKit controller's engine calls)
+    // MARK: - The gl facade's engine calls (LeCodes' GL)
 
-    /// An instance of a BUILT-IN material by name ("camera") — `_creator.builtinMaterial`'s answer: the
-    /// runtime finds the shader in the materials archive. nil = no engine, or no such material.
-    static func builtinMaterial(_ name: String) -> UInt32? {
-        let id = lc_builtinMaterial(name)
-        return id == UInt32.max ? nil : id
-    }
-    static func setUniformTexture(_ materialInstanceId: UInt32, _ uniform: String, texture: UInt32) {
-        lc_setUniformTexture(materialInstanceId, uniform, texture)
-    }
-    static func setUniformArray(_ materialInstanceId: UInt32, _ uniform: String, _ values: [Float]) {
-        values.withUnsafeBufferPointer { lc_setUniformArray(materialInstanceId, uniform, $0.baseAddress, $0.count) }
-    }
-    /// The camera plane of the scene, drawn with the material (which becomes the scene's material).
-    static func createARPlane(sceneId: UInt32, materialInstanceId: UInt32) { lc_createARPlane(sceneId, materialInstanceId) }
-    /// The camera intrinsics rotated for the display into the scene's projection + the plane's uniforms.
-    static func updateProjectionMatrixAR(sceneId: UInt32, fx: Float, fy: Float, cameraWidth: Float, cameraHeight: Float, displayAngle: Int32) {
-        lc_updateProjectionMatrixAR(sceneId, fx, fy, cameraWidth, cameraHeight, displayAngle)
-    }
-    /// An anchor entity began / lost tracking: its visibility + the SDK's onTrackStateChange.
-    static func updateTrackingState(entityId: UInt32, tracking: Bool) { lc_updateTrackingState(entityId, tracking) }
-    /// An entity's world matrix (column-major, simd's layout).
+    /// The entity is alive in the engine (the app may have destroyed one it handed a plugin).
+    static func entityExists(_ entityId: UInt32) -> Bool { lc_entityExists(entityId) }
+    /// An entity's WORLD matrix (column-major, simd's layout); skipped for a dead entity.
     static func setMatrix(entityId: UInt32, _ m: simd_float4x4) {
+        withFloats(m) { lc_setMatrix(entityId, $0) }
+    }
+    static func setVisible(entityId: UInt32, _ visible: Bool) { lc_setVisible(entityId, visible) }
+    /// The pose of the scene's camera (its world matrix).
+    static func setCameraMatrix(sceneId: UInt32, _ m: simd_float4x4) {
+        withFloats(m) { lc_setCameraMatrix(sceneId, $0) }
+    }
+    /// A projection the host computes (OpenGL clip conventions) in place of the scene's fov one.
+    static func setCameraProjectionMatrix(sceneId: UInt32, _ m: simd_float4x4, near: Float, far: Float) {
+        withFloats(m) { lc_setCameraProjectionMatrix(sceneId, $0, near, far) }
+    }
+    static func clearCameraProjectionMatrix(sceneId: UInt32) { lc_clearCameraProjectionMatrix(sceneId) }
+    /// The scene's background: the texture through the affine map `uv` (6 floats, row-major
+    /// [a b tx  c d ty]); nil = none.
+    static func setSceneBackground(sceneId: UInt32, texture: UInt32?, uv: [Float]) {
+        guard uv.count == 6 else { return }
+        uv.withUnsafeBufferPointer { lc_setSceneBackground(sceneId, texture ?? UInt32.max, $0.baseAddress) }
+    }
+    /// The scene view's size in points — the scene's viewport over the density of setDensityGL, the
+    /// space its touches arrive in; 0 × 0 before the scene was first shown.
+    static func sceneViewport(sceneId: UInt32) -> (width: Float, height: Float) {
+        var size = SIMD2<Float>(0, 0)
+        withUnsafeMutablePointer(to: &size) { p in p.withMemoryRebound(to: Float.self, capacity: 2) { lc_sceneViewport(sceneId, $0) } }
+        return (size.x, size.y)
+    }
+    /// The composite of the scene's next frame: RGBA8, top row first — nil (0 × 0) when refused.
+    /// `done` once, on the main thread.
+    static func readPixels(sceneId: UInt32, _ done: @escaping (Data?, Int, Int) -> Void) {
+        let box = Unmanaged.passRetained(PixelsDone(done)).toOpaque()
+        lc_readPixels(sceneId, { user, rgba, width, height in
+            guard let user else { return }
+            let box = Unmanaged<PixelsDone>.fromOpaque(user).takeRetainedValue()
+            if let rgba, width > 0, height > 0 {
+                box.done(Data(bytes: rgba, count: Int(width) * Int(height) * 4), Int(width), Int(height))
+            } else {
+                box.done(nil, 0, 0)
+            }
+        }, box)
+    }
+
+    private static func withFloats(_ m: simd_float4x4, _ body: (UnsafePointer<Float>) -> Void) {
         var m = m
-        withUnsafePointer(to: &m) { p in
-            p.withMemoryRebound(to: Float.self, capacity: 16) { lc_setMatrix(entityId, $0) }
-        }
+        withUnsafePointer(to: &m) { p in p.withMemoryRebound(to: Float.self, capacity: 16) { body($0) } }
     }
 
     // MARK: - creator-2d's Metal arm
@@ -92,4 +119,10 @@ public extension Core {
     static func scene2dSetPresentTarget(_ targetId: Int32) { lc_2dSetPresentTarget(targetId) }
     /// One scene, no simulation, into a target — an image node's picture.
     static func scene2dDrawSceneTarget(sceneId: Int32, targetId: Int32, density: Float) { lc_2dDrawSceneTarget(sceneId, targetId, density) }
+}
+
+/// The closure a readPixels completes, boxed for the C callback's `user`.
+private final class PixelsDone {
+    let done: (Data?, Int, Int) -> Void
+    init(_ done: @escaping (Data?, Int, Int) -> Void) { self.done = done }
 }

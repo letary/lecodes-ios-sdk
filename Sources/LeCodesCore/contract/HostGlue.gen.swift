@@ -83,13 +83,8 @@ enum HostGlue {
         if t.closeScene != nil { c.pointee.closeScene = { HostGlue.t_gl!.closeScene!() } }
         c.pointee.createTexture = { a0, a1, a2, a3 in HostGlue.t_gl!.createTexture(systemId: a0, flags: a1, onComplete: a2, onReject: a3) }
         if t.createMediaPlayerTexture != nil { c.pointee.createMediaPlayerTexture = { a0 in return HostGlue.t_gl!.createMediaPlayerTexture!(a0) } }
-        if t.launchAR != nil { c.pointee.launchAR = { a0, a1, a2 in HostGlue.t_gl!.launchAR!(a0, a1, a2) } }
-        if t.stopAR != nil { c.pointee.stopAR = { HostGlue.t_gl!.stopAR!() } }
         if t.launchVR != nil { c.pointee.launchVR = { a0, a1, a2 in HostGlue.t_gl!.launchVR!(a0, a1, a2) } }
         if t.stopVR != nil { c.pointee.stopVR = { HostGlue.t_gl!.stopVR!() } }
-        if t.createARController != nil { c.pointee.createARController = { a0, a1, a2 in HostGlue.t_gl!.createARController!(a0, a1, HostGlue.string(a2)) } }
-        if t.createRootAnchor != nil { c.pointee.createRootAnchor = { a0, a1 in HostGlue.t_gl!.createRootAnchor!(a0, a1) } }
-        if t.createAnchor != nil { c.pointee.createAnchor = { a0, a1, a2, a3 in HostGlue.t_gl!.createAnchor!(a0, a1, a2, a3) } }
     }
 
     // ---- HostScene2d (2d.d.ts) — an optional table
@@ -176,6 +171,9 @@ enum HostGlue {
         if t.vibrate != nil { c.pointee.vibrate = { a0 in HostGlue.t_device!.vibrate!(HostGlue.string(a0)) } }
         if t.setStatsOverlay != nil { c.pointee.setStatsOverlay = { a0 in HostGlue.t_device!.setStatsOverlay!(a0) } }
         if t.statsOverlay != nil { c.pointee.statsOverlay = { return HostGlue.t_device!.statsOverlay!() } }
+        if t.setFrameRate != nil { c.pointee.setFrameRate = { a0 in HostGlue.t_device!.setFrameRate!(a0) } }
+        if t.setVsync != nil { c.pointee.setVsync = { a0 in HostGlue.t_device!.setVsync!(a0) } }
+        if t.displayRefreshRate != nil { c.pointee.displayRefreshRate = { return HostGlue.t_device!.displayRefreshRate!() } }
         if t.motionAvailable != nil { c.pointee.motionAvailable = { return HostGlue.t_device!.motionAvailable!() } }
         if t.motionStart != nil { c.pointee.motionStart = { a0 in return HostGlue.t_device!.motionStart!(a0) } }
         if t.motionStop != nil { c.pointee.motionStop = { HostGlue.t_device!.motionStop!() } }
@@ -184,7 +182,9 @@ enum HostGlue {
         if t.clipboardRead != nil { c.pointee.clipboardRead = { a0, a1 in HostGlue.t_device!.clipboardRead!(a0, a1) } }
         if t.share != nil { c.pointee.share = { a0, a1 in HostGlue.t_device!.share!(a0, a1.map { String(cString: $0) }) } }
         if t.openFilePicker != nil { c.pointee.openFilePicker = { a0, a1, a2, a3 in HostGlue.t_device!.openFilePicker!(a0, a1, a2, a3.map { String(cString: $0) }) } }
-        if t.requestCamera != nil { c.pointee.requestCamera = { a0, a1 in HostGlue.t_device!.requestCamera!(a0, a1) } }
+        if t.queryPermission != nil { c.pointee.queryPermission = { a0, a1, a2 in HostGlue.t_device!.queryPermission!(HostGlue.string(a0), a1, a2) } }
+        if t.requestPermission != nil { c.pointee.requestPermission = { a0, a1, a2 in HostGlue.t_device!.requestPermission!(HostGlue.string(a0), a1, a2) } }
+        if t.openSettings != nil { c.pointee.openSettings = { HostGlue.t_device!.openSettings!() } }
     }
 
     // ---- HostFetch (fetch.d.ts)

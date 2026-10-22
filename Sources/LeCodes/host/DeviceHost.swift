@@ -1,9 +1,8 @@
 // The `device` table (device.d.ts): the platform fields, precise touch, haptics, device.motion, the
-// clipboard, share, the file picker and the camera permission — every "ask the OS" call that is
+// clipboard, share, the file picker and the OS permissions — every "ask the OS" call that is
 // not a network, a store or a player.
 import Foundation
 import UIKit
-import AVFoundation
 import LeCodesCore
 
 final class DeviceHost: HostDevice {
@@ -22,6 +21,10 @@ final class DeviceHost: HostDevice {
     // device.statsOverlay — the host's own line of frame numbers (StatsOverlay.swift), the engine's state.
     var setStatsOverlay: ((Bool) -> Void)? { { [weak self] on in self?.engine?.statsOverlay.enabled = on } }
     var statsOverlay: (() -> Bool)? { { [weak self] in self?.engine?.statsOverlay.enabled ?? false } }
+    // device.setFrameRate / displayRefreshRate — the display link's rate (LeCodesEngine.setFrameRate).
+    // No setVsync: a phone never presents outside the refresh, so the slot stays nil and the SDK answers false.
+    var setFrameRate: ((Double) -> Void)? { { [weak self] fps in self?.engine?.setFrameRate(fps) } }
+    var displayRefreshRate: (() -> Double)? { { LeCodesEngine.displayRefreshRate() } }
     var motionAvailable: (() -> Bool)? { { [weak self] in self?.motion.available ?? false } }
     var motionStart: ((Double) -> Bool)? { { [weak self] interval in self?.motion.start(interval: interval) ?? false } }
     var motionStop: (() -> Void)? { { [weak self] in self?.motion.stop() } }
@@ -51,19 +54,28 @@ final class DeviceHost: HostDevice {
             }
         }
     }
-    var requestCamera: ((JSCallback, JSCallback) -> Void)? {
-        { onComplete, onReject in
-            switch AVCaptureDevice.authorizationStatus(for: .video) {
-            case .authorized: Core.resolve(onComplete, reject: onReject)
-            case .denied, .restricted: Core.reject(onComplete, reject: onReject, message: "Camera is not available")
-            case .notDetermined:
-                AVCaptureDevice.requestAccess(for: .video) { granted in
-                    if granted { Core.resolve(onComplete, reject: onReject) }
-                    else { Core.reject(onComplete, reject: onReject, message: "Camera is not available") }
-                }
-            @unknown default: Core.reject(onComplete, reject: onReject, message: "Camera is not available")
+    // The permissions: the engine's one service (plugins ask it too — services/Permissions.swift).
+    var queryPermission: ((String, JSCallback, JSCallback) -> Void)? {
+        { [weak self] kind, onComplete, onReject in
+            guard let permissions = self?.engine?.permissions, let k = Self.kind(kind, permissions) else {
+                return Core.reject(onComplete, reject: onReject, message: "\(kind): not a permission this host asks for")
             }
+            Core.resolve(onComplete, reject: onReject, [.string(permissions.query(k).rawValue)])
         }
+    }
+    var requestPermission: ((String, JSCallback, JSCallback) -> Void)? {
+        { [weak self] kind, onComplete, onReject in
+            guard let permissions = self?.engine?.permissions, let k = Self.kind(kind, permissions) else {
+                return Core.reject(onComplete, reject: onReject, message: "\(kind): not a permission this host asks for")
+            }
+            permissions.request(k) { state in Core.resolve(onComplete, reject: onReject, [.string(state.rawValue)]) }
+        }
+    }
+    var openSettings: (() -> Void)? { { [weak self] in self?.engine?.permissions.openSettings() } }
+
+    private static func kind(_ wire: String, _ permissions: Permissions) -> PermissionKind? {
+        guard let k = PermissionKind(rawValue: wire), permissions.knows(k) else { return nil }
+        return k
     }
 
     func dispose() { motion.stop() }

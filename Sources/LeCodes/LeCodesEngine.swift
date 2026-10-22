@@ -5,8 +5,9 @@
 // from the JS thread, which is the main thread here.
 //
 // What stays on this class: the lifecycle (resume / pause / dispose), world control, the
-// embedder's hooks (fetchLocal, the registries: callbacks, services, native views, AR
-// controllers), the log sink. The UI renderer (renderers/uikit) arrives through the `ui` table,
+// embedder's hooks (fetchLocal, the registries: callbacks, services, native views), the gl facade
+// a plugin's half drives the 3D engine through (`gl`, scene/GL.swift), the log sink. The UI
+// renderer (renderers/uikit) arrives through the `ui` table,
 // the scene hosts through `gl` / `scene2d` / `canvas` (GLHost / Scene2dHost / CreatorCanvas by
 // default, for the features the linked engine has); HeadlessUI + HeadlessGL are the engine-only
 // host of the tests and the checks runner.
@@ -32,11 +33,13 @@ public final class LeCodesEngine {
     public let nativeViews = NativeViews()
     /// The registerService registry (typed plugins over the service channel).
     let services = Services()
-    /// An AR controller kind (`createARController(mode)` in the SDK: "world", "markers"): the app
-    /// registers LeCodesAR's ARKitController (or its own) per mode. Without the 3D engine: ignored.
-    public func registerARController(_ mode: String, _ factory: @escaping () -> ARController) {
-        glHost?.controllerFactories[mode] = factory
-    }
+    /// The OS permissions (camera, microphone, location; a plugin registers the kind it brings):
+    /// what the SDK's `permissions` and a plugin's `@permission` glue ask. services/Permissions.swift.
+    public let permissions = Permissions()
+    /// The gl facade: what a plugin's half drives the 3D engine through — the matrices of the
+    /// entities the app handed it, a scene's projection and background, external textures, a hook
+    /// before each frame, a pixel readback (scene/GL.swift). Every call a no-op without the engine.
+    public let gl: GL
 
     /// Register a platform-view capability the SDK opens / embeds via `NativeView(name)`.
     /// `version` = the contract version the half was generated from: a generated registration says
@@ -83,7 +86,9 @@ public final class LeCodesEngine {
     public let hasGL: Bool
     /// The root view the renderer's views are mounted under (LeCodesView sets it); nil = nothing
     /// is shown, the runtime still lays out.
-    public internal(set) weak var rootView: LeCodesView?
+    public internal(set) weak var rootView: LeCodesView? {
+        didSet { gl.stage = rootView }   // the viewport's rotation: the interface orientation of its window
+    }
 
     let appEvents = AppEvents()
     let localFiles = LocalFiles()
@@ -117,6 +122,7 @@ public final class LeCodesEngine {
         var gl = gl
         var scene2d = scene2d
         hasGL = features.contains("gl")
+        self.gl = GL(hasEngine: hasGL)
         if headless {
             Core.setHeadlessBackend(true)
             if gl == nil { gl = HeadlessGL() }
@@ -144,6 +150,7 @@ public final class LeCodesEngine {
         service = ServiceHost()
         input = InputHost()
         media = MediaHost()
+        media.players.gl = self.gl
         app.engine = self
         device.engine = self
         fetch.engine = self
@@ -220,8 +227,9 @@ public final class LeCodesEngine {
         // surface material instances inside beginFrame): the video frames into their textures, the
         // scene view's drawable at the scene's render scale.
         if hasGL {
+            rootView?.sceneView?.prepareFrame()   // first: a body reads this frame's viewport (gl.viewport)
+            gl.frame()   // the plugins' bodies (a camera frame, a pose): before the tick, so what they write is this frame's
             media.players.updateTextures()
-            rootView?.sceneView?.prepareFrame()
         }
         // The renderer's frame around the runtime's: first whatever was queued since the last frame
         // (input, background results), then the mutations this tick produced, so a node added or
@@ -241,8 +249,36 @@ public final class LeCodesEngine {
     public func resume() {
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(onDisplayLink))
+        applyFrameRate(link)
         link.add(to: .main, forMode: .common)
         displayLink = link
+    }
+
+    /// device.setFrameRate: the cap on the display link, 0 = the display's own rate. Host state — it
+    /// stays through a project swap and across pause / resume (the link is made anew on each resume).
+    public private(set) var frameRateCap: Double = 0
+    public func setFrameRate(_ fps: Double) {
+        frameRateCap = fps > 0 && fps.isFinite ? fps : 0
+        if let link = displayLink { applyFrameRate(link) }
+    }
+    /// A fixed range at the cap: iOS shows the nearest rate the panel has (60 on a 120 Hz ProMotion =
+    /// every second refresh), the tick — and the 3D frame inside it — comes at that rate. No Info.plist
+    /// key is needed at or under 60; above it an iPhone wants the embedding app's
+    /// CADisableMinimumFrameDurationOnPhone (renderers/uikit LayerTween.swift has the probe).
+    private func applyFrameRate(_ link: CADisplayLink) {
+        let f = Float(frameRateCap)
+        link.preferredFrameRateRange = f > 0 ? CAFrameRateRange(minimum: f, maximum: f, preferred: f) : .default
+    }
+    /// device.displayRefreshRate: the fastest rate the screen offers the app — 120 on ProMotion, but an
+    /// iPhone's display link stays at 60 unless the embedding app's Info.plist lifts the floor
+    /// (CADisableMinimumFrameDurationOnPhone), and then that is what a cap can reach.
+    static func displayRefreshRate() -> Double {
+        let max = UIScreen.main.maximumFramesPerSecond
+        if max > 60, UIDevice.current.userInterfaceIdiom == .phone,
+           (Bundle.main.object(forInfoDictionaryKey: "CADisableMinimumFrameDurationOnPhone") as? Bool) != true {
+            return 60
+        }
+        return Double(max)
     }
     /// Stop the frame loop. "pause" is delivered by AppEvents BEFORE this, with one explicit tick,
     /// so the app hears it — after the link stops nothing pumps the JS world.
@@ -294,8 +330,8 @@ public final class LeCodesEngine {
         currentWorldTrusted = trusted
         // The orientation lock is per world: the launcher always comes back unlocked.
         OrientationLock.apply(.auto)
-        // So is AR: the outgoing world's session (its camera, its frames into the engine) ends.
-        glHost?.resetAR()
+        // So are the gl facade's frame bodies: a plugin's session is the outgoing world's.
+        gl.worldChanged()
         onWorldChanged?(projectUuid, trusted)
     }
 
@@ -324,7 +360,7 @@ public final class LeCodesEngine {
         pause()
         statsOverlay.detach()
         appEvents.stop()
-        glHost?.resetAR()
+        gl.worldChanged()
         socket.dispose()
         media.dispose()
         nativeViews.destroyAll()

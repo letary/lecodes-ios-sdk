@@ -30,19 +30,9 @@ public protocol HostGL: AnyObject {
     /// Optional slot: nil = absent.
     var createMediaPlayerTexture: ((Int32) -> Int32)? { get }
     /// Optional slot: nil = absent.
-    var launchAR: ((UInt32, JSCallback, JSCallback) -> Void)? { get }
-    /// Optional slot: nil = absent.
-    var stopAR: (() -> Void)? { get }
-    /// Optional slot: nil = absent.
     var launchVR: ((UInt32, JSCallback, JSCallback) -> Void)? { get }
     /// Optional slot: nil = absent.
     var stopVR: (() -> Void)? { get }
-    /// Optional slot: nil = absent.
-    var createARController: ((UInt32, UInt32, String) -> Void)? { get }
-    /// Optional slot: nil = absent.
-    var createRootAnchor: ((UInt32, UInt32) -> Void)? { get }
-    /// Optional slot: nil = absent.
-    var createAnchor: ((UInt32, UInt32, Float, Int32) -> Void)? { get }
 }
 public extension HostGL {
     var getGLContext: (() -> UnsafeMutableRawPointer?)? { nil }
@@ -50,13 +40,8 @@ public extension HostGL {
     var createGLView: (() -> Void)? { nil }
     var closeScene: (() -> Void)? { nil }
     var createMediaPlayerTexture: ((Int32) -> Int32)? { nil }
-    var launchAR: ((UInt32, JSCallback, JSCallback) -> Void)? { nil }
-    var stopAR: (() -> Void)? { nil }
     var launchVR: ((UInt32, JSCallback, JSCallback) -> Void)? { nil }
     var stopVR: (() -> Void)? { nil }
-    var createARController: ((UInt32, UInt32, String) -> Void)? { nil }
-    var createRootAnchor: ((UInt32, UInt32) -> Void)? { nil }
-    var createAnchor: ((UInt32, UInt32, Float, Int32) -> Void)? { nil }
 }
 
 /// The host's scene2d table (export interface HostScene2d of sdk/src/bridges/2d.d.ts) — optional as a whole (the host may provide none).
@@ -183,6 +168,12 @@ public protocol HostDevice: AnyObject {
     /// Optional slot: nil = absent.
     var statsOverlay: (() -> Bool)? { get }
     /// Optional slot: nil = absent.
+    var setFrameRate: ((Double) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var setVsync: ((Bool) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var displayRefreshRate: (() -> Double)? { get }
+    /// Optional slot: nil = absent.
     var motionAvailable: (() -> Bool)? { get }
     /// Optional slot: nil = absent.
     var motionStart: ((Double) -> Bool)? { get }
@@ -199,13 +190,20 @@ public protocol HostDevice: AnyObject {
     /// Optional slot: nil = absent.
     var openFilePicker: ((JSCallback, JSCallback, Bool, String?) -> Void)? { get }
     /// Optional slot: nil = absent.
-    var requestCamera: ((JSCallback, JSCallback) -> Void)? { get }
+    var queryPermission: ((String, JSCallback, JSCallback) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var requestPermission: ((String, JSCallback, JSCallback) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var openSettings: (() -> Void)? { get }
 }
 public extension HostDevice {
     var setPreciseTouch: ((Bool) -> Void)? { nil }
     var vibrate: ((String) -> Void)? { nil }
     var setStatsOverlay: ((Bool) -> Void)? { nil }
     var statsOverlay: (() -> Bool)? { nil }
+    var setFrameRate: ((Double) -> Void)? { nil }
+    var setVsync: ((Bool) -> Void)? { nil }
+    var displayRefreshRate: (() -> Double)? { nil }
     var motionAvailable: (() -> Bool)? { nil }
     var motionStart: ((Double) -> Bool)? { nil }
     var motionStop: (() -> Void)? { nil }
@@ -214,7 +212,9 @@ public extension HostDevice {
     var clipboardRead: ((JSCallback, JSCallback) -> Void)? { nil }
     var share: ((Int32, String?) -> Void)? { nil }
     var openFilePicker: ((JSCallback, JSCallback, Bool, String?) -> Void)? { nil }
-    var requestCamera: ((JSCallback, JSCallback) -> Void)? { nil }
+    var queryPermission: ((String, JSCallback, JSCallback) -> Void)? { nil }
+    var requestPermission: ((String, JSCallback, JSCallback) -> Void)? { nil }
+    var openSettings: (() -> Void)? { nil }
 }
 
 /// The host's side of _creatorFetch (sdk/src/bridges/fetch.d.ts).
