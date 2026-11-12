@@ -47,6 +47,17 @@
 // answers 200 and the download applies as above. The date rule after a download stays the authority:
 // a file rewritten in place (a newer mtime, the same old code) costs one download and is refused.
 //
+// The dates cannot tell the same code apart: a developer syncs and builds the store app from a
+// commit, then pushes it, and hub's environment serves its own build of that commit with the
+// promote's date — later than the embedded bundle's, so every fresh install would download the
+// code it already has. So every check also names the commit of the bundle that runs now (the
+// `// commit:` line of what `activeBundle()` returns, as `LeCodes-Commit`; a bundle without the
+// line, or with something that is no git object id, sends nothing). A source that serves that
+// very commit answers 304 whatever the validators say (LeCodesHub docs/edge.md, "The shells"),
+// and the 304 is handled as any other (`lecodes app sync` writes the line only for a bundle that
+// IS that commit's build). A header, not a query parameter: a custom source may be a signed URL
+// that one more parameter would break; a source that does not know it ignores it.
+//
 // Swift + URLSession only: nothing of the engine. A `file://` source works (the dev loop, the tests).
 import CryptoKit
 import Foundation
@@ -67,10 +78,12 @@ public enum LeCodesUpdater {
 
     // MARK: - The bundle header (sdk/src/compile/header.ts)
 
-    /// `// sdk: <version>` and `// last-updated: <ISO date>` of a compiled bundle's first lines.
+    /// `// sdk: <version>`, `// last-updated: <ISO date>` and `// commit: <sha>` of a compiled
+    /// bundle's first lines.
     struct BundleHeader: Equatable {
         var sdk: String?
         var lastUpdated: String?
+        var commit: String?
     }
 
     static func header(of data: Data) -> BundleHeader {
@@ -79,9 +92,21 @@ public enum LeCodesUpdater {
         for line in head.split(separator: "\n", omittingEmptySubsequences: false).prefix(16) {
             if line.hasPrefix("// sdk: ") { h.sdk = String(line.dropFirst("// sdk: ".count)).trimmingCharacters(in: .whitespaces) }
             else if line.hasPrefix("// last-updated: ") { h.lastUpdated = String(line.dropFirst("// last-updated: ".count)).trimmingCharacters(in: .whitespaces) }
+            else if line.hasPrefix("// commit: ") { h.commit = String(line.dropFirst("// commit: ".count)).trimmingCharacters(in: .whitespaces) }
             else if !line.hasPrefix("//") { break }   // the header is the leading comment block
         }
         return h
+    }
+
+    /// The request header naming the commit of the bundle that runs now.
+    static let commitHeader = "LeCodes-Commit"
+
+    /// What a check sends as `LeCodes-Commit`: the bundle's `// commit:` line when it is a git
+    /// object id (40–64 lowercase hex, sha1 or sha256), nil otherwise (no line: nothing is sent).
+    static func commit(of bundle: Data) -> String? {
+        guard let line = header(of: bundle).commit, (40...64).contains(line.utf8.count),
+              line.utf8.allSatisfy({ (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }) else { return nil }
+        return line
     }
 
     /// The major of "X.Y.Z"; nil when the string is not a version (a pre-2.0 bundle has no line).
@@ -298,16 +323,23 @@ public enum LeCodesUpdater {
             request.setValue(since, forHTTPHeaderField: "If-Modified-Since")
         }
 
+        // What runs now: the cached update when it is still this binary's, else the embedded bundle.
+        let cached: Data? = usable ? (try? Data(contentsOf: updateFile)).flatMap { sha256($0) == state!.hash ? $0 : nil } : nil
+        let activeData = cached ?? embeddedData
+        let active = usable ? state!.hash : baseline
+        // ...and its commit, beside the validators: a source serving that commit answers 304.
+        if let sha = commit(of: activeData) { request.setValue(sha, forHTTPHeaderField: commitHeader) }
+
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error { onDone?(.failed(error.localizedDescription)); return }
             // A file:// source answers with no HTTP response: it is a 200.
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 200
             if status == 304 {
-                // The source is not newer than the embedded bundle (the date stood in for a state):
-                // record it as this binary's state, with the 304's validators, so the next launch
-                // runs at once and revalidates by ETag. The pair rule holds: the file is the
-                // embedded bundle itself.
+                // The source is not newer than the embedded bundle (the date stood in for a state),
+                // or serves its commit: record it as this binary's state, with the 304's validators,
+                // so the next launch runs at once and revalidates by ETag. The pair rule holds: the
+                // file is the embedded bundle itself.
                 if !usable {
                     let newState = State(
                         url: source.absoluteString, baseline: baseline, hash: baseline,
@@ -332,11 +364,6 @@ public enum LeCodesUpdater {
             guard data.starts(with: Array("//".utf8)) || contentType.contains("javascript") else {
                 onDone?(.failed("not a JS bundle (\(contentType))")); return
             }
-
-            // What runs now: the cached update when it is still this binary's, else the embedded bundle.
-            let cached: Data? = usable ? (try? Data(contentsOf: updateFile)).flatMap { sha256($0) == state!.hash ? $0 : nil } : nil
-            let activeData = cached ?? embeddedData
-            let active = usable ? state!.hash : baseline
 
             // The download replaces the active bundle only when it is one this app may run (the header
             // rules above); a refused one leaves the active bundle in place but keeps the new

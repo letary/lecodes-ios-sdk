@@ -39,12 +39,34 @@ public enum LeCodesShell {
         splash = hold
         return launch(embeddedAt: embeddedAt, source: source, firstLaunchTimeout: firstLaunchTimeout) { code in
             hold.run({
-                engine.run(code)
+                engine.run(withEngineBoot(code))
                 engine.resume()
             }, drop: { onSplashDrop?() })
             onReady?()
         }
     }
+
+    /// What the launcher of a viewer does before it runs a project (hosts/mobile-init): a bundle
+    /// whose header has no `// gl:` line uses the 3D engine from its first line and expects it UP
+    /// — `// gl: disable` has none, `// gl: defer` calls createEngine itself. A shell has no
+    /// launcher, so the call is put in front of the bundle's own code: on the line where it starts
+    /// (the header above stays whole, no line of the bundle moves). Without it the first
+    /// `_creator.create…` of such a bundle read a null engine and the app died (an AR screen, 2026-11-12).
+    /// A variant without the engine has no `_creator.createEngine`: the call is not made.
+    static func withEngineBoot(_ code: String) -> String {
+        var at = code.startIndex
+        var compiled = false
+        while at < code.endIndex, code[at...].hasPrefix("//") {
+            if code[at...].hasPrefix("// gl:") { return code }
+            if code[at...].hasPrefix("// sdk:") { compiled = true }
+            guard let end = code[at...].firstIndex(of: "\n") else { at = code.endIndex; break }
+            at = code.index(after: end)
+        }
+        guard compiled else { return code }   // not a compiled bundle: nothing is known of it
+        return String(code[..<at]) + engineBoot + String(code[at...])
+    }
+    static let engineBoot =
+        "try{typeof _creator!==\"undefined\"&&_creator&&_creator.createEngine&&_creator.createEngine()}catch(e){console.error(\"createEngine: \"+e)};"
 
     /// The splash of the launch `boot` holds — what `_creatorApp.holdSplash` / `hideSplash` reach
     /// (host/AppHost). Nil in an app that did not boot as a shell: nothing to hold there. Main
