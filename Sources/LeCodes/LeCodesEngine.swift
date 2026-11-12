@@ -5,7 +5,7 @@
 // from the JS thread, which is the main thread here.
 //
 // What stays on this class: the lifecycle (resume / pause / dispose), world control, the
-// embedder's hooks (fetchLocal, the registries: callbacks, services, native views), the gl facade
+// embedder's hooks (fetchLocal, the registries: callbacks, services, native views, host nodes), the gl facade
 // a plugin's half drives the 3D engine through (`gl`, scene/GL.swift), the log sink. The UI
 // renderer (renderers/uikit) arrives through the `ui` table,
 // the scene hosts through `gl` / `scene2d` / `canvas` (GLHost / Scene2dHost / CreatorCanvas by
@@ -31,9 +31,12 @@ public final class LeCodesEngine {
 
     /// The registerView registry (`NativeView(name)` elements): the renderer mounts its instances.
     public let nativeViews = NativeViews()
+    /// The registerNode registry (a plugin's `UIHostNode` elements): the renderer's holder makes an
+    /// instance per node (services/HostNodes.swift).
+    public let hostNodes = HostNodes()
     /// The registerService registry (typed plugins over the service channel).
     let services = Services()
-    /// The OS permissions (camera, microphone, location; a plugin registers the kind it brings):
+    /// The OS permissions (camera, microphone, location, notifications; a plugin registers the kind it brings):
     /// what the SDK's `permissions` and a plugin's `@permission` glue ask. services/Permissions.swift.
     public let permissions = Permissions()
     /// The gl facade: what a plugin's half drives the 3D engine through — the matrices of the
@@ -45,6 +48,12 @@ public final class LeCodesEngine {
     /// `version` = the contract version the half was generated from: a generated registration says
     /// it, one written by hand is version 1.
     public func registerView(_ name: String, version: Int32 = 1, _ factory: @escaping NativeViewFactory) { nativeViews.register(name, version: version, factory) }
+    /// Register a host node kind: a node of the layout the plugin draws (`UIHostNode<"kind", …>` of its
+    /// contract). `factory` makes one instance per node of the kind, when the SDK creates one; the
+    /// generated `<Name>NodeGlue.register(in:_:)` calls this with the contract's version.
+    public func registerNode(_ kind: String, version: Int32 = 1, _ factory: @escaping (HostNodeChannel) -> HostNodeInstance) {
+        hostNodes.register(kind, version: version, factory)
+    }
     /// Register a headless service capability (the UI-less sibling of registerView).
     public func registerService(_ name: String, version: Int32 = 1, _ factory: @escaping ServiceFactory) { services.register(name, version: version, factory) }
     /// A host-provided JS method (`registerCallback` of the runtime): a synchronous JS → Swift call.
@@ -63,6 +72,28 @@ public final class LeCodesEngine {
     }
     public enum LogLevel: Int { case debug = 0, info = 1, warn = 2, error = 3 }
 
+    // MARK: - The device cache (docs/cache.md)
+
+    /// How many bytes of copies ONE project may keep on the device (`fetch(url, { cache })`, an
+    /// image's `cache`); over it the least recently used go. 0 = no cache: the modes are plain
+    /// requests. Set it before the bundle runs.
+    public var cacheQuotaBytes: Int64 = 256 * 1024 * 1024 {
+        didSet { Core.cacheConfigure(dir: LeCodesEngine.cacheDirectory, quotaBytes: cacheQuotaBytes) }
+    }
+    /// Application Support, not Caches: the copies are what the app opens with when there is no
+    /// network, so the OS must not purge them when the disk is short. Out of the backup: they are
+    /// downloads. The store (runtime/native/src/cache/store.cpp) makes the folders under it.
+    private static let cacheDirectory: String = {
+        let files = FileManager.default
+        guard let base = files.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return "" }
+        var dir = base.appendingPathComponent("lecodes/cache", isDirectory: true)
+        try? files.createDirectory(at: dir, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+        return dir.path
+    }()
+
     // MARK: - The host tables
 
     let app: AppHost
@@ -74,6 +105,7 @@ public final class LeCodesEngine {
     let service: ServiceHost
     let input: InputHost
     let media: MediaHost
+    let notifications: NotificationsHost
     /// The UI renderer over the contract (renderers/uikit's HostUIRenderer, or HeadlessUI).
     public let ui: HostUI
     /// The renderer's seam into this host (nil with HeadlessUI).
@@ -92,6 +124,9 @@ public final class LeCodesEngine {
 
     let appEvents = AppEvents()
     let localFiles = LocalFiles()
+    /// The local notifications: the `notifications` table's service and the taps on them
+    /// (LeCodesAppHooks routes those here).
+    let localNotifications = LocalNotifications()
     /// device.statsOverlay: the host's own line of frame numbers (StatsOverlay.swift).
     lazy var statsOverlay = StatsOverlay(engine: self)
 
@@ -150,6 +185,7 @@ public final class LeCodesEngine {
         service = ServiceHost()
         input = InputHost()
         media = MediaHost()
+        notifications = NotificationsHost()
         media.players.gl = self.gl
         app.engine = self
         device.engine = self
@@ -157,6 +193,7 @@ public final class LeCodesEngine {
         files.engine = self
         service.engine = self
         input.engine = self
+        notifications.engine = self
         glHost?.engine = self
         (gl as? HeadlessGL)?.engine = self
         scene2dHost?.engine = self
@@ -164,11 +201,13 @@ public final class LeCodesEngine {
         // The host contract, BEFORE initJS (the runtime validates every required table and slot and
         // aborts naming a missing one). `files` is present: the app OWNS its sandbox container, so
         // the SDK `files` global works there (relative paths land in Application Support).
+        // `notifications` is present: the notification center is every iOS app's.
         Core.setHostServices(HostServices(
             gl: gl, scene2d: scene2d, ui: self.ui, canvas: canvas,
             app: app, device: device, fetch: fetch, files: files, storage: storage,
-            socket: socket, service: service, input: input, media: media))
+            socket: socket, service: service, input: input, media: media, notifications: notifications))
         Core.initJS()
+        Core.cacheConfigure(dir: LeCodesEngine.cacheDirectory, quotaBytes: cacheQuotaBytes)
         // Without a renderer text measures 0×0 (yoga needs a function before the first layout —
         // the engine-only host answers like the windowless server); the renderer installed its own.
         if rendererServices == nil { Core.setMeasureFunc { _, _, _, _, _, _ in 0 } }
@@ -189,6 +228,10 @@ public final class LeCodesEngine {
         }
         appEvents.engine = self
         appEvents.start()
+        // After initJS: attaching drains a buffered cold-start tap, which seeds the launch URL — still
+        // before run(), so the launcher's top level reads it.
+        localNotifications.engine = self
+        LeCodesAppHooks.attachLocalNotifications(localNotifications)
     }
 
     // MARK: - Language / run
@@ -204,6 +247,7 @@ public final class LeCodesEngine {
         // A new project world restarts the SDK's viewIds — drop the objects those ids named, or the
         // next world inherits a previous project's live camera view.
         nativeViews.destroyAll()
+        hostNodes.destroyAll()
         Core.run(code)
     }
 
@@ -364,6 +408,7 @@ public final class LeCodesEngine {
         socket.dispose()
         media.dispose()
         nativeViews.destroyAll()
+        hostNodes.destroyAll()
         localFiles.flush()
         if rendererServices != nil { CreatorCanvas.shared.clearAll() }
     }

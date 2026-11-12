@@ -19,7 +19,7 @@ class ScreenView: NodeView, PointerTarget {
         let newLayer = CALayer()
         newLayer.backgroundColor = UIColor.black.cgColor
         newLayer.opacity = 0
-        newLayer.zPosition = 1   // over the children, whose layers are this layer's sublayers too
+        newLayer.zPosition = BoxPaint.ZOrder.dim   // over the children, whose layers are this layer's sublayers too
         newLayer.actions = ["opacity": NSNull(), "bounds": NSNull(), "position": NSNull()]
         newLayer.frame = bounds
         layer.addSublayer(newLayer)

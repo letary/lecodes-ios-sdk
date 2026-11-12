@@ -36,7 +36,7 @@ public enum Nodes {
         case "pager": return UINodePager(id: id, type: type)
         case "input", "textarea": return UINodeInput(id: id, type: type)
         case "video": return UINodeVideo(id: id, type: type)
-        case "native": return UINodeNativeView(id: id, type: type)
+        case "hostnode": return UINodeHost(id: id, type: type)   // a plugin's node: its instance from the host's registry (docs/plans/host-node-plan.md)
         default: return UINodeContainer(id: id, type: type)   // column / row / box / spacer (a plain box, no paint)
         }
     }

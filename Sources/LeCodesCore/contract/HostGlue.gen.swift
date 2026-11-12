@@ -22,6 +22,7 @@ enum HostGlue {
     static var t_service: LeCodesCore.HostService?
     static var t_input: LeCodesCore.HostInput?
     static var t_media: LeCodesCore.HostMedia?
+    static var t_notifications: LeCodesCore.HostNotifications?
 
     // The C tables the runtime keeps pointers to for the life of the process (never freed).
     static let c_gl = UnsafeMutablePointer<CLeCodesCore.HostGL>.allocate(capacity: 1)
@@ -37,6 +38,7 @@ enum HostGlue {
     static let c_service = UnsafeMutablePointer<CLeCodesCore.HostService>.allocate(capacity: 1)
     static let c_input = UnsafeMutablePointer<CLeCodesCore.HostInput>.allocate(capacity: 1)
     static let c_media = UnsafeMutablePointer<CLeCodesCore.HostMedia>.allocate(capacity: 1)
+    static let c_notifications = UnsafeMutablePointer<CLeCodesCore.HostNotifications>.allocate(capacity: 1)
     static let c_services = UnsafeMutablePointer<CLeCodesCore.HostServices>.allocate(capacity: 1)
 
     // ---- conversions -------------------------------------------------------------------------
@@ -115,16 +117,22 @@ enum HostGlue {
         if t.isViewSupported != nil { c.pointee.isViewSupported = { a0 in return HostGlue.t_ui!.isViewSupported!(HostGlue.string(a0)) } }
         if t.viewVersion != nil { c.pointee.viewVersion = { a0 in return HostGlue.t_ui!.viewVersion!(HostGlue.string(a0)) } }
         if t.viewCall != nil { c.pointee.viewCall = { a0, a1, a2, a3, a4 in HostGlue.t_ui!.viewCall!(a0, HostGlue.string(a1), WireIn(a2), a3, a4) } }
-        c.pointee.layerOpen = { a0 in HostGlue.t_ui!.layerOpen(node: Int(bitPattern: a0)) }
+        if t.nodeVersion != nil { c.pointee.nodeVersion = { a0 in return HostGlue.t_ui!.nodeVersion!(HostGlue.string(a0)) } }
+        if t.nodeCall != nil { c.pointee.nodeCall = { a0, a1, a2, a3, a4 in HostGlue.t_ui!.nodeCall!(Int(bitPattern: a0), HostGlue.string(a1), WireIn(a2), a3, a4) } }
+        c.pointee.layerOpen = { a0, a1 in HostGlue.t_ui!.layerOpen(node: Int(bitPattern: a0), surface: a1) }
         c.pointee.layerClose = { a0 in HostGlue.t_ui!.layerClose(node: Int(bitPattern: a0)) }
         c.pointee.registerFont = { a0, a1, a2, a3, a4, a5 in HostGlue.t_ui!.registerFont(url: HostGlue.string(a0), fontFamily: HostGlue.string(a1), weight: a2, style: a3, onComplete: a4, onReject: a5) }
+        if t.preloadImage != nil { c.pointee.preloadImage = { a0, a1, a2, a3, a4, a5 in HostGlue.t_ui!.preloadImage!(HostGlue.string(a0), a1, a2, HostGlue.string(a3), a4, a5) } }
         c.pointee.showToast = { a0, a1 in HostGlue.t_ui!.showToast(message: HostGlue.string(a0), duration: a1) }
         c.pointee.getButtonPressed = { a0 in return HostGlue.t_ui!.getButtonPressed(node: Int(bitPattern: a0)) }
         c.pointee.getTextValue = { a0 in return HostGlue.cString(HostGlue.t_ui!.getTextValue(node: Int(bitPattern: a0))) ?? strdup("") }
         if t.getBoundingRect != nil { c.pointee.getBoundingRect = { a0, a1 in return HostGlue.floats(HostGlue.t_ui!.getBoundingRect!(Int(bitPattern: a0)), a1, 4) } }
+        if t.debugInput != nil { c.pointee.debugInput = { a0, a1, a2, a3, a4, a5 in return HostGlue.t_ui!.debugInput!(a0, a1, a2, a3, a4, HostGlue.string(a5)) } }
         if t.touchHandler != nil { c.pointee.touchHandler = { a0, a1, a2, a3 in HostGlue.t_ui!.touchHandler!(a0, a1, a2, Int(bitPattern: a3)) } }
         if t.longPressHandler != nil { c.pointee.longPressHandler = { a0, a1 in HostGlue.t_ui!.longPressHandler!(a0, Int(bitPattern: a1)) } }
         c.pointee.vlistScroll = { a0, a1, a2 in HostGlue.t_ui!.vlistScroll(node: Int(bitPattern: a0), scrollY: a1, animated: a2) }
+        if t.scrollTo != nil { c.pointee.scrollTo = { a0, a1, a2 in HostGlue.t_ui!.scrollTo!(Int(bitPattern: a0), a1, a2) } }
+        if t.getScroll != nil { c.pointee.getScroll = { a0, a1 in return HostGlue.floats(HostGlue.t_ui!.getScroll!(Int(bitPattern: a0)), a1, 2) } }
         if t.pagerCommand != nil { c.pointee.pagerCommand = { a0, a1, a2 in HostGlue.t_ui!.pagerCommand!(Int(bitPattern: a0), HostGlue.string(a1), a2) } }
         if t.pagerShowPage != nil { c.pointee.pagerShowPage = { a0, a1, a2 in HostGlue.t_ui!.pagerShowPage!(Int(bitPattern: a0), Int(bitPattern: a1), a2) } }
         if t.pagerDropPage != nil { c.pointee.pagerDropPage = { a0, a1 in HostGlue.t_ui!.pagerDropPage!(Int(bitPattern: a0), Int(bitPattern: a1)) } }
@@ -155,6 +163,10 @@ enum HostGlue {
         if t.setOrientation != nil { c.pointee.setOrientation = { a0 in HostGlue.t_app!.setOrientation!(HostGlue.string(a0)) } }
         if t.appVersion != nil { c.pointee.appVersion = { return HostGlue.cString(HostGlue.t_app!.appVersion!()) ?? strdup("") } }
         if t.appBuild != nil { c.pointee.appBuild = { return HostGlue.t_app!.appBuild!() } }
+        if t.updateSource != nil { c.pointee.updateSource = { return HostGlue.cString(HostGlue.t_app!.updateSource!()) ?? strdup("") } }
+        if t.setUpdateSource != nil { c.pointee.setUpdateSource = { a0 in return HostGlue.t_app!.setUpdateSource!(HostGlue.string(a0)) } }
+        if t.holdSplash != nil { c.pointee.holdSplash = { return HostGlue.t_app!.holdSplash!() } }
+        if t.hideSplash != nil { c.pointee.hideSplash = { HostGlue.t_app!.hideSplash!() } }
         if t.worldChange != nil { c.pointee.worldChange = { a0, a1 in HostGlue.t_app!.worldChange!(a0.map { String(cString: $0) }, a1) } }
         if t.exit != nil { c.pointee.exit = { HostGlue.t_app!.exit!() } }
     }
@@ -194,7 +206,7 @@ enum HostGlue {
         c.initialize(to: CLeCodesCore.HostFetch())
         c.pointee.local = { a0 in return HostGlue.t_fetch!.local(path: HostGlue.string(a0)) }
         if t.dispose != nil { c.pointee.dispose = { a0 in HostGlue.t_fetch!.dispose!(a0) } }
-        c.pointee.request = { a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 in HostGlue.t_fetch!.request(url: HostGlue.string(a0), method: HostGlue.string(a1), headers: HostGlue.strings(a2, a3), body: a4.map { String(cString: $0) }, form: HostGlue.array(a5, a6, HostGlue.makeFetchFormEntry), onComplete: a7, onReject: a8, onProgress: a9) }
+        c.pointee.request = { a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11 in HostGlue.t_fetch!.request(url: HostGlue.string(a0), method: HostGlue.string(a1), headers: HostGlue.strings(a2, a3), body: a4.map { String(cString: $0) }, form: HostGlue.array(a5, a6, HostGlue.makeFetchFormEntry), cache: HostGlue.string(a7), timeoutMs: a8, onComplete: a9, onReject: a10, onProgress: a11) }
         c.pointee.buffer = { a0, a1, a2 in return HostGlue.bytes(HostGlue.t_fetch!.buffer(id: a0, addByte: a1), a2) }
         c.pointee.bufferSlice = { a0, a1, a2, a3, a4 in return HostGlue.bytes(HostGlue.t_fetch!.bufferSlice(id: a0, start: a1, end: a2, addByte: a3), a4) }
         c.pointee.systemBuffer = { a0, a1 in return HostGlue.bytes(HostGlue.t_fetch!.systemBuffer(id: a0), a1) }
@@ -274,6 +286,18 @@ enum HostGlue {
         if t.remove != nil { c.pointee.remove = { a0 in HostGlue.t_media!.remove!(a0) } }
     }
 
+    // ---- HostNotifications (notifications.d.ts) — an optional table
+    static func fill_notifications(_ t: LeCodesCore.HostNotifications) {
+        t_notifications = t
+        let c = c_notifications
+        c.initialize(to: CLeCodesCore.HostNotifications())
+        c.pointee.schedule = { a0, a1, a2 in HostGlue.t_notifications!.schedule(request: HostGlue.string(a0), onComplete: a1, onReject: a2) }
+        c.pointee.cancel = { a0 in HostGlue.t_notifications!.cancel(id: HostGlue.string(a0)) }
+        c.pointee.cancelAll = { HostGlue.t_notifications!.cancelAll() }
+        c.pointee.pending = { a0, a1 in HostGlue.t_notifications!.pending(onComplete: a0, onReject: a1) }
+        c.pointee.launchTap = { return HostGlue.cString(HostGlue.t_notifications!.launchTap()) }
+    }
+
     /// Fill every C table from the Swift HostServices and hand them to the runtime (setHostServices):
     /// ONCE, before initJS. A nil optional table leaves its pointer NULL.
     static func bind(_ s: LeCodesCore.HostServices) {
@@ -298,6 +322,7 @@ enum HostGlue {
         fill_input(s.input)
         c_services.pointee.input = UnsafePointer(c_input)
         if let t = s.media { fill_media(t); c_services.pointee.media = UnsafePointer(c_media) }
+        if let t = s.notifications { fill_notifications(t); c_services.pointee.notifications = UnsafePointer(c_notifications) }
         lc_setHostServices(c_services)
     }
 }

@@ -81,6 +81,12 @@ class ScrollContainerView: TouchScrollView, UIScrollViewDelegate, SheetScrollabl
         updateRefreshControlOffset()
     }
 
+    /// The box's shadow lives in the parent's layer: it goes where the view goes (BoxShadow.swift).
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        node?.followShadow()
+    }
+
     /// After a layout visit: the content extent the core computed.
     func updateContentSize() {
         guard let node else { return }
@@ -95,6 +101,36 @@ class ScrollContainerView: TouchScrollView, UIScrollViewDelegate, SheetScrollabl
             if cw.isFinite { size.width = cw }
         }
         if size != contentSize { contentSize = size }
+        if let offset = pendingScrollTo, isLaidOut {
+            pendingScrollTo = nil
+            scrollTo(offset, animated: false)
+        }
+    }
+
+    // MARK: - the scroll command and its read (HostUI.scrollTo / getScroll)
+
+    private var isLaidOut: Bool { bounds.width > 0 && bounds.height > 0 }
+    /// A command that came before the first layout: where the view is first shown.
+    private var pendingScrollTo: CGFloat?
+
+    /// The farthest offset along the axis: the content beyond the viewport (the keyboard's band
+    /// counts as content while it is this view's inset).
+    var scrollMax: CGFloat {
+        axis == .horizontal ? max(0, contentSize.width - bounds.width) : max(0, contentSize.height + contentInset.bottom - bounds.height)
+    }
+
+    /// To `offset` along the axis, clamped to the content; a scroll in flight is dropped for it.
+    func scrollTo(_ offset: CGFloat, animated: Bool) {
+        guard isLaidOut else { pendingScrollTo = offset; return }
+        let target = min(max(0, offset), scrollMax)
+        let point = axis == .horizontal ? CGPoint(x: target, y: contentOffset.y) : CGPoint(x: contentOffset.x, y: target)
+        setContentOffset(point, animated: animated && Animations.enabled)
+    }
+
+    /// [offset, max] along the axis; nil until the view has a box.
+    var scrollState: [Float]? {
+        guard isLaidOut else { return nil }
+        return [Float(axis == .horizontal ? contentOffset.x : contentOffset.y), Float(scrollMax)]
     }
 
     /// Nothing to scroll and no refresh: the view lets touches through to what is behind it.
@@ -117,7 +153,7 @@ class ScrollContainerView: TouchScrollView, UIScrollViewDelegate, SheetScrollabl
         // A horizontal scrollable reports its own axis — contentOffset.y is pinned at 0 there, and
         // the overscroll bookkeeping below is vertical only by construction.
         if axis == .horizontal {
-            node.onScroll(scrollView.contentOffset.x)
+            node.onScroll(scrollView.contentOffset.x, max: scrollMax)
             return
         }
         let y = scrollView.contentOffset.y
@@ -138,7 +174,7 @@ class ScrollContainerView: TouchScrollView, UIScrollViewDelegate, SheetScrollabl
             node.onOverscroll(overscrollValue)
             scrollView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
         } else {
-            node.onScroll(y)
+            node.onScroll(y, max: scrollMax)
         }
         didScroll()
     }
@@ -345,8 +381,8 @@ final class VListView: ScrollContainerView {
             let o = child.lastLayout?.origin ?? LayoutBatch.read(child.id).origin
             let f = CGRect(x: o.x.isFinite ? o.x : 0, y: top + (o.y.isFinite ? o.y : 0), width: at.width, height: at.height)
             if at != f {
-                if child.lastLayout == nil { UIView.performWithoutAnimation { child.view.place(f) } }   // a newborn item lands at once
-                else { child.view.place(f) }
+                if child.lastLayout == nil { UIView.performWithoutAnimation { child.view.place(f); child.followShadow() } }   // a newborn item lands at once
+                else { child.view.place(f); child.followShadow() }
             }
         }
     }

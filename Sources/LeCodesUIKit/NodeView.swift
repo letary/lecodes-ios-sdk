@@ -4,10 +4,40 @@
 // radius; per-side = one CALayer per visible edge, square: CALayer has no per-edge border), the
 // radius (one cornerRadius = the largest, maskedCorners for which corners;
 // clamped to half the box at layout, the `borderRadius: 9999` pill idiom — iOS does not clamp like
-// the web), one CAGradientLayer under the content, the opacity on the LAYER, display none as
-// isHidden, the overflow rule, and the CSS transform with its origin folded into the matrix. A view
-// holds no style of its own: it draws the node's Paint, as the core resolved it, after every
-// PaintBatch sync and every frame write.
+// the web), one CAGradientLayer under the content, the opacity as `alpha` (the layer's opacity,
+// written where UIKit sees it — the glass follows it: `apply`), display none as isHidden, the
+// overflow rule, the CSS transform with its origin folded into the matrix, and the backdrop
+// effect. A view holds no style of its own: it draws the node's Paint, as the core resolved it,
+// after every PaintBatch sync and every frame write.
+//
+// The backdrop (`backdropBlur` / `glass`, docs/plans/backdrop-plan.md): one UIVisualEffectView, a
+// UIGlassEffect where `glass` is drawn (iOS 26, built with the iOS 26 SDK) — it wins over the blur,
+// the background color is its tint and never a fill, a button's is interactive (`view is
+// ButtonView`: the one node kind that claims its box for touches) — else `UIBlurEffect(.regular)`
+// for any radius > 0 (rule 5 of the plan: UIKit has no public blur radius, and `.regular` is the
+// style with the thinnest tint — measured on 2026-11-09 against Android's exact Gaussian; the
+// system materials blur the same ~24 pt and veil far more). It is painted
+// UNDER the node's own background: the view layer's own color and contents paint under every
+// sublayer, so while an effect is on the color moves to a layer of its own above it (a blur) or
+// into the tint (glass), and the image to its own layer like a tile. The order is BoxPaint.ZOrder's
+// (by zPosition, never by index: the gradient's rule). A material is clipped to the rounded box;
+// glass is not (it takes its shape from the corner radius itself, and a clip would cut its press
+// stretch). The effect view is also the FIRST subview — NodeView sends it back after every child
+// insert (hit-testing walks the subview order, and interactive glass takes touches; any other
+// effect lets touches through, so an empty box still never swallows one). It is a subview, so the
+// layer's transform, the sheet's offset and the opacity carry it (an opacity below 1 on it or an
+// ancestor is UIKit's known limit: the effect cannot sample through a group). An image node draws
+// none (its layer's contents is the picture), nor does a host node whose instance paints itself
+// (UINodeHost, `paints: "self"`: its background color is left to it too).
+//
+// The shadows (`boxShadow`, BoxShadow.swift) have two sides. The drop shadows are the one paint that
+// is NOT the view's: they live in the PARENT's layer directly below the node's layer (a clipping node
+// masks its own bounds), in a container that copies the node layer's geometry and its animations.
+// The inset ones are a rung of the ladder inside the box (over the gradient, under the children),
+// clipped to the rounded box and kept on it while a scroll view scrolls. BoxShadow.swift says how
+// both follow every writer (this class's frame / transform / opacity / display / radius writes and
+// layoutSublayers call it) and the structure (`didMoveToSuperview` of each node view class,
+// `reorder` for the moves within a parent).
 //
 // NodeView, the container's view, adds the hit-test rule: yoga-sized containers never clip, so a
 // child can sit outside its parent's box, and UIKit's default bounds test would drop the touch at
@@ -22,6 +52,28 @@ import LeCodesCore
 import UIKit
 
 public final class BoxPaint {
+    /// The box's paint order inside the node's layer, by zPosition — never by sublayer index: a
+    /// subview move indexes the sublayers array and can drop a child's layer under a box layer (a
+    /// display none → flex re-attach painted the gradient over text). CA sorts sublayers by
+    /// zPosition, then by index among equals; the view layer's own color and contents paint under
+    /// every sublayer. Every child sits at 0.
+    enum ZOrder {
+        /// The backdrop's UIVisualEffectView.
+        static let effect: CGFloat = -4
+        /// The background color on a layer of its own (over a blur).
+        static let color: CGFloat = -3
+        /// The background image on a layer of its own (tiled, or over an effect).
+        static let image: CGFloat = -2
+        static let gradient: CGFloat = -1
+        /// The inset shadows' container (BoxShadow.swift).
+        static let insetShadow: CGFloat = -0.5
+        static let children: CGFloat = 0
+        /// A screen's dim (ScreenView): over its content and its children.
+        static let dim: CGFloat = 1
+        /// The per-side border edges: over everything.
+        static let border: CGFloat = 1000
+    }
+
     unowned let view: UIView
     private var layer: CALayer { view.layer }
     private var bounds: CGRect { view.bounds }
@@ -35,9 +87,18 @@ public final class BoxPaint {
     private var backgroundImage: UIImage?
     private var backgroundSvg: SvgDocument?
     private var backgroundSvgRendered: (pw: Int, ph: Int, image: UIImage)?
-    private var tileLayer: CALayer?
+    /// The background image on a layer of its own (tiled, or over a backdrop effect); nil while it
+    /// is the view layer's own `contents`.
+    private var imageLayer: CALayer?
     private var overflow: CuiPaint.Overflow = .visible
+    /// The backdrop effect (backdropBlur / glass): the effect view under everything the box paints,
+    /// and the background color's own layer above it while the effect is a blur.
+    private var backdrop = Backdrop.none
+    private var effectView: UIVisualEffectView?
+    private var colorLayer: CALayer?
     private var radius = Paint.Corners()
+    /// The shadows, both sides; nil until the first non-empty list.
+    private var shadows: BoxShadows?
     /// The CSS matrix and origin the node carries (the pivot is size-dependent, so the applied
     /// transform is re-derived from the current bounds at every writer).
     private var matrix: CGAffineTransform?
@@ -59,14 +120,20 @@ public final class BoxPaint {
     /// The node's Paint moved (PaintBatch): sync the layer.
     func apply(_ p: Paint, dirty r: PaintRecord) {
         typealias B = CuiPaint.Bit
-        if r.dirty(B.backgroundColor) { view.backgroundColor = p.backgroundColor.map { UIColor(rgba: $0) } }
-        if r.dirty(B.opacity) { layer.opacity = Float(p.opacity) }
-        if r.dirty(B.display) { view.isHidden = p.display == .none }
+        if r.dirty(B.backgroundColor) || r.dirty(B.backdropBlur) || r.dirty(B.glass) { applyBackdrop(p) }
+        // Through UIKit's `alpha`, not the layer's `opacity` (the same value — `alpha` reads it): UIKit
+        // learns of a CHANGE only in the setter, and the glass under an ancestor follows it. A glass
+        // view that enters the window while an ancestor is at 0 — a screen root re-mounted at a
+        // fade's first pose — is set up unseen and drawn again only when UIKit sees that alpha
+        // change; a layer write never told it, so the root faded in with its glass gone for good.
+        if r.dirty(B.opacity) { view.alpha = p.opacity; shadows?.follow() }
+        if r.dirty(B.display) { view.isHidden = p.display == .none; shadows?.follow() }
         if r.dirty(B.overflow) { overflow = p.overflow; applyOverflowClipping() }
         if r.dirty(B.borderTopLeftRadius) || r.dirty(B.borderTopRightRadius) || r.dirty(B.borderBottomRightRadius) || r.dirty(B.borderBottomLeftRadius) {
             radius = p.radius
             layoutCornerRadius()
             applyOverflowClipping()   // a radius arriving later starts clipping
+            shadows?.follow()
         }
         if r.dirty(B.borderTopWidth) || r.dirty(B.borderRightWidth) || r.dirty(B.borderBottomWidth) || r.dirty(B.borderLeftWidth)
             || r.dirty(B.borderTopColor) || r.dirty(B.borderRightColor) || r.dirty(B.borderBottomColor) || r.dirty(B.borderLeftColor) {
@@ -82,6 +149,7 @@ public final class BoxPaint {
             applyTransform()
         }
         if r.dirty(B.pointerEvents) { view.isUserInteractionEnabled = p.pointerEvents }
+        if r.dirty(B.boxShadow) { applyShadows(p.shadows) }
     }
 
     // MARK: - the frame
@@ -98,7 +166,7 @@ public final class BoxPaint {
     func applyFrame(_ frame: CGRect) {
         let assign = {
             self.view.place(frame)
-            if self.matrix != nil || self.offsetY != 0 { self.applyTransform() }
+            if self.matrix != nil || self.offsetY != 0 { self.applyTransform() } else { self.shadows?.follow() }
         }
         if view.bounds.size == .zero && view.center == .zero { UIView.performWithoutAnimation(assign) } else { assign() }
     }
@@ -108,10 +176,12 @@ public final class BoxPaint {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layoutCornerRadius()
+        layoutBackdrop()
         layoutBackground()
         layoutGradient()
         layoutBorderFrames()
         CATransaction.commit()
+        shadows?.follow()
     }
 
     // MARK: - radius / overflow
@@ -130,6 +200,10 @@ public final class BoxPaint {
         layer.maskedCorners = mask.isEmpty ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMaxXMaxYCorner, .layerMinXMaxYCorner] : mask
         gradientLayer?.cornerRadius = r
         gradientLayer?.maskedCorners = layer.maskedCorners
+        for l in [effectView?.layer, colorLayer, imageLayer] {
+            l?.cornerRadius = r
+            l?.maskedCorners = layer.maskedCorners
+        }
     }
 
     /// Three states, not a flag: hidden clips, visible never, scroll clips exactly when the box has
@@ -146,6 +220,151 @@ public final class BoxPaint {
         case .hidden: view.clipsToBounds = true
         case .visible: view.clipsToBounds = false
         case .scroll: view.clipsToBounds = layer.cornerRadius > 0
+        }
+    }
+
+    // MARK: - backdrop
+
+    /// What the box paints under its own background (docs/plans/backdrop-plan.md): nothing, the
+    /// system blur (`.regular`, any `backdropBlur` > 0), or the system glass (`glass`, iOS 26+:
+    /// where it is drawn it wins over the blur, takes the background color as its tint and reacts
+    /// to touches on a button).
+    enum Backdrop: Equatable {
+        case none
+        case blur(UIBlurEffect.Style)
+        case glass(CuiPaint.Glass, tint: UInt32?, interactive: Bool)
+    }
+
+    /// The backdrop the paint asks for. `blur` is the record's value (px at the core's density —
+    /// points on iOS, where the core runs at density 1): any radius > 0 is the one `.regular` blur.
+    /// Not a paused `UIViewPropertyAnimator` over `effect` scrubbed by `fractionComplete` (the
+    /// expo-blur radius trick): probed on iOS 26.5 / 26.6, the fraction is ignored and the full
+    /// effect lands.
+    static func backdrop(blur: CGFloat, glass: CuiPaint.Glass, background: UInt32?, interactive: Bool) -> Backdrop {
+        #if compiler(>=6.2)   // UIGlassEffect is in the iOS 26 SDK (Xcode 26); an older one builds the fallback
+        if glass != .none, #available(iOS 26, *) {
+            let tint = background.flatMap { ($0 & 0xFF) == 0 ? nil : $0 }
+            return .glass(glass, tint: tint, interactive: interactive)
+        }
+        #endif
+        return blur > 0 ? .blur(.regular) : .none
+    }
+
+    /// backgroundColor / backdropBlur / glass moved: the effect, and where the color paints. No
+    /// effect: the view's own backgroundColor (the plain path). A blur: the color on a layer of its
+    /// own just above the effect view (rule 1: the node's background is not part of its backdrop),
+    /// the view's own color nil — it paints under every sublayer, the effect's included. Glass: the
+    /// color is the tint and paints nowhere else (rule 3). An image node draws none: its layer's own
+    /// contents IS the picture, which the effect would cover. A host node whose instance paints itself
+    /// takes none of the three (UINodeHost: `paints: "self"`).
+    private func applyBackdrop(_ p: Paint) {
+        if let host = view as? HostNodeBoxView, host.paintsSelf { return }
+        let want = view is ImageView ? Backdrop.none
+            : BoxPaint.backdrop(blur: p.backdropBlur, glass: p.glass, background: p.backgroundColor, interactive: view is ButtonView)
+        let color = p.backgroundColor.map { UIColor(rgba: $0) }
+        let movedImage = (want == .none) != (backdrop == .none)
+        if want != backdrop {
+            // A blur ⇄ glass switch makes the effect view again: one view never carries both kinds.
+            if want == .none || BoxPaint.isGlass(want) != BoxPaint.isGlass(backdrop) {
+                effectView?.removeFromSuperview()
+                effectView = nil
+            }
+            backdrop = want
+            if want != .none {
+                let ev = effectView ?? makeEffectView()
+                ev.effect = BoxPaint.effect(want)
+                ev.isUserInteractionEnabled = BoxPaint.isInteractive(want)
+                // A material is rounded only by the clip; glass shapes itself from the corner
+                // radius (the same pixels at rest, probed) and its press stretch must not be cut.
+                ev.clipsToBounds = !BoxPaint.isGlass(want)
+            }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if case .blur = want {
+            view.backgroundColor = nil
+            let blurColorLayer = colorLayer ?? {
+                let l = CALayer()
+                l.zPosition = ZOrder.color
+                l.cornerRadius = layer.cornerRadius
+                l.maskedCorners = layer.maskedCorners
+                layer.insertSublayer(l, at: 0)
+                colorLayer = l
+                return l
+            }()
+            blurColorLayer.frame = bounds
+            blurColorLayer.backgroundColor = color?.cgColor
+        } else {
+            colorLayer?.removeFromSuperlayer()
+            colorLayer = nil
+            view.backgroundColor = want == .none ? color : nil
+        }
+        CATransaction.commit()
+        if movedImage { showBackground() }   // the view layer's own contents ⇄ its own layer
+    }
+
+    /// The effect view: the FIRST subview at ZOrder.effect — under every sublayer the box paints
+    /// and every child whatever the subview order (the gradient's rule); NodeView also keeps it
+    /// first in the order, which is what hit-testing walks. Touches pass
+    /// through it unless it is interactive glass (a button's, which claims its box anyway): then
+    /// the glass sees the touch and the responder chain carries it on to the button.
+    private func makeEffectView() -> UIVisualEffectView {
+        let ev = UIVisualEffectView(effect: nil)
+        ev.isUserInteractionEnabled = false
+        ev.layer.zPosition = ZOrder.effect
+        ev.layer.cornerRadius = layer.cornerRadius
+        ev.layer.maskedCorners = layer.maskedCorners
+        UIView.performWithoutAnimation {
+            view.insertSubview(ev, at: 0)
+            ev.place(bounds)
+        }
+        (view as? NodeView)?.backdropView = ev
+        effectView = ev
+        return ev
+    }
+
+    private static func effect(_ b: Backdrop) -> UIVisualEffect? {
+        switch b {
+        case .none: return nil
+        case .blur(let style): return UIBlurEffect(style: style)
+        case .glass(let style, let tint, let interactive):
+            #if compiler(>=6.2)
+            if #available(iOS 26, *) {
+                let g = UIGlassEffect(style: style == .clear ? .clear : .regular)
+                g.tintColor = tint.map { UIColor(rgba: $0) }
+                g.isInteractive = interactive
+                return g
+            }
+            #endif
+            return nil
+        }
+    }
+
+    private static func isGlass(_ b: Backdrop) -> Bool {
+        if case .glass = b { return true }
+        return false
+    }
+
+    private static func isInteractive(_ b: Backdrop) -> Bool {
+        if case .glass(_, _, let interactive) = b { return interactive }
+        return false
+    }
+
+    /// From layoutSublayers: the effect and the color layer cover the box (at the bounds' origin:
+    /// a scroll view's effect stays on the box, as the border does).
+    private func layoutBackdrop() {
+        effectView?.place(bounds)   // a view (interactive glass stretches it on a press): never `frame`
+        colorLayer?.frame = bounds
+    }
+
+    /// The layer the background color paints on — where a claimed backgroundColor tween plays
+    /// (LayerTween): the view's own, the blur's color layer, none under glass (the color is the
+    /// tint, which Core Animation cannot interpolate: the runtime keeps writing it).
+    var backgroundColorLayer: CALayer? {
+        switch backdrop {
+        case .none: return layer
+        case .blur: return colorLayer
+        case .glass: return nil
         }
     }
 
@@ -175,7 +394,7 @@ public final class BoxPaint {
             if visible {
                 let edge = borderLayers[i] ?? {
                     let l = CALayer()
-                    l.zPosition = 1000   // above the content and the children
+                    l.zPosition = ZOrder.border
                     layer.addSublayer(l)
                     borderLayers[i] = l
                     return l
@@ -245,39 +464,55 @@ public final class BoxPaint {
     }
 
     /// The image as `backgroundSize` shows it. cover / contain / fill: the view layer's own
-    /// `contents` (under every sublayer: the gradient at zPosition -1 paints over it, as on the
-    /// web) under a contents gravity; a radius clips it through the overflow rule's masksToBounds.
+    /// `contents` (under every sublayer: the gradient paints over it, as on the web) under a
+    /// contents gravity; a radius clips it through the overflow rule's masksToBounds.
     /// tile: a gravity cannot repeat, so the image is the pattern of a layer of its own under the
-    /// gradient — repeated at its natural size (points) from the box's top-left corner.
+    /// gradient — repeated at its natural size (points) from the box's top-left corner. Over a
+    /// backdrop effect every size takes that layer: the view layer's own contents paint under every
+    /// sublayer, the effect's included, and would be blurred away (rule 1).
     private func showBackground() {
         guard !(view is ImageView) else { return }   // its layer is its own image's
         let image = backgroundImage ?? renderBackgroundSvg()
-        guard backgroundSize == .tile, let image else {
-            tileLayer?.removeFromSuperlayer()
-            tileLayer = nil
-            layer.contents = image?.cgImage
+        guard backgroundSize == .tile || backdrop != .none, let image else {
+            imageLayer?.removeFromSuperlayer()
+            imageLayer = nil
+            layer.contents = backdrop == .none ? image?.cgImage : nil
             layer.contentsScale = image?.scale ?? UIScreen.main.scale
-            switch backgroundSize {
-            case .cover: layer.contentsGravity = .resizeAspectFill
-            case .contain: layer.contentsGravity = .resizeAspect
-            case .fill, .tile: layer.contentsGravity = .resize
-            }
+            layer.contentsGravity = BoxPaint.gravity(backgroundSize)
             return
         }
         layer.contents = nil
-        let tl = tileLayer ?? {
+        let il = imageLayer ?? {
             let l = CALayer()
-            l.zPosition = -2   // under the gradient (-1) and every child
+            l.zPosition = ZOrder.image
             l.masksToBounds = true
+            l.cornerRadius = layer.cornerRadius
+            l.maskedCorners = layer.maskedCorners
             layer.insertSublayer(l, at: 0)
-            tileLayer = l
+            imageLayer = l
             return l
         }()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        tl.backgroundColor = UIColor(patternImage: image).cgColor
+        if backgroundSize == .tile {
+            il.contents = nil
+            il.backgroundColor = UIColor(patternImage: image).cgColor
+        } else {
+            il.backgroundColor = nil
+            il.contents = image.cgImage
+            il.contentsScale = image.scale
+            il.contentsGravity = BoxPaint.gravity(backgroundSize)
+        }
         layoutBackground()
         CATransaction.commit()
+    }
+
+    private static func gravity(_ size: CuiPaint.BackgroundSize) -> CALayerContentsGravity {
+        switch size {
+        case .cover: return .resizeAspectFill
+        case .contain: return .resizeAspect
+        case .fill, .tile: return .resize
+        }
     }
 
     /// The SVG's bitmap for the current box and `backgroundSize`: one cell at the natural size when
@@ -310,14 +545,14 @@ public final class BoxPaint {
         return image
     }
 
-    /// From layoutSublayers: an SVG sized by the box is drawn again when the box changed; the tile
+    /// From layoutSublayers: an SVG sized by the box is drawn again when the box changed; the image
     /// layer follows the bounds and the radius.
     private func layoutBackground() {
         if backgroundSvg != nil && backgroundSize != .tile { showBackground() }
-        guard let tileLayer else { return }
-        tileLayer.frame = bounds
-        tileLayer.cornerRadius = layer.cornerRadius
-        tileLayer.maskedCorners = layer.maskedCorners
+        guard let imageLayer else { return }
+        imageLayer.frame = bounds
+        imageLayer.cornerRadius = layer.cornerRadius
+        imageLayer.maskedCorners = layer.maskedCorners
     }
     func cancelBackgroundLoad() {
         backgroundToken?.cancel()
@@ -338,8 +573,8 @@ public final class BoxPaint {
             l.needsDisplayOnBoundsChange = true
             // insertSublayer(at: 0) is not enough: a display none → flex re-attach indexes the
             // subviews array and can drop a child's layer beneath a non-subview layer, painting the
-            // gradient over text. A negative zPosition keeps it under every child for good.
-            l.zPosition = -1
+            // gradient over text. Its zPosition keeps it under every child for good.
+            l.zPosition = ZOrder.gradient
             layer.insertSublayer(l, at: 0)
             gradientLayer = l
             return l
@@ -410,6 +645,31 @@ public final class BoxPaint {
         return (CGPoint(x: cx, y: cy), CGPoint(x: cx + rx / w, y: cy + ry / h))
     }
 
+    // MARK: - shadows
+
+    /// boxShadow moved: the shadows made on the first non-empty list, gone with the last; a side
+    /// (drop / inset) without a shadow holds no layer.
+    private func applyShadows(_ all: [Shadow]) {
+        // An image node draws no inset shadow: CSS hides it under the picture (docs/plans/shadow-inset-plan.md).
+        let list = view is ImageView ? all.filter { !$0.inset } : all
+        if list.isEmpty {
+            shadows?.remove()
+            shadows = nil
+            return
+        }
+        let s = shadows ?? BoxShadows(view: view)
+        shadows = s
+        s.set(list)
+    }
+
+    /// The node's view moved in the tree, or a writer outside this class moved its layer (the
+    /// pager, the vlist, a claimed tween): the shadow follows. `reorder`: within the same parent.
+    func followShadow(reorder: Bool = false) { shadows?.follow(reorder: reorder) }
+
+    /// The drop shadows' container in the parent's layer, the inset ones' in the node's (tests).
+    var dropShadowContainer: CALayer? { shadows?.drop?.container }
+    var insetShadowContainer: CALayer? { shadows?.inset?.container }
+
     // MARK: - transform
 
     /// The pivot folded into the matrix: T(p − c) · M · T(−(p − c)) in the view's own unrotated
@@ -438,6 +698,7 @@ public final class BoxPaint {
 
     private func applyTransform() {
         view.transform = composedTransform()
+        shadows?.follow()
     }
 }
 
@@ -479,6 +740,27 @@ open class NodeView: UIView {
     open override func layoutSubviews() {
         super.layoutSubviews()
         node?.box.layoutSublayers()
+    }
+
+    /// The box's shadow lives in the parent's layer: it goes where the view goes (BoxShadow.swift).
+    open override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        node?.followShadow()
+    }
+
+    /// The pager hides and shows its pages itself.
+    open override var isHidden: Bool { didSet { if isHidden != oldValue { node?.followShadow() } } }
+
+    /// The backdrop effect BoxPaint put under the box (nil = none): kept the FIRST subview whatever
+    /// a child insert does — children go in `at: 0` or above a sibling, and hit-testing walks the
+    /// subview order (interactive glass takes touches); the render order is its zPosition's. A
+    /// stored reference, never `node?.box`: subviews are added while the node's view is still
+    /// being made (PagerMount), and the lazy box would make it again.
+    weak var backdropView: UIView?
+
+    open override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        if let b = backdropView, subview !== b, b.superview === self, subviews.first !== b { sendSubviewToBack(b) }
     }
 
     /// A child that would answer the touch, for a point outside this view's bounds.

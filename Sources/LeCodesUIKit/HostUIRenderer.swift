@@ -2,9 +2,10 @@
 // (creator-pkg/host.gen.h, the Swift protocol in LeCodesCore's HostContract.swift). The runtime owns
 // the UI tree; this table gets one call per structural change, content property or flag mask, keyed
 // by node id, and keeps one UINode per id in Nodes. Events go back by id through Core.nodeEvent /
-// Core.touch* / Core.nodeLayout. Presentation (openView, widgets), fonts, toasts and native views
-// are the host's: they go through `services`, which the initializer also makes the renderer-wide
-// `rendererServices`. The twin of renderers/android's HostUIRenderer.kt.
+// Core.touch* / Core.nodeLayout. Presentation (openView, widgets), fonts, toasts, native views and the
+// host node registry (nodeVersion / nodeCall, UINodeHost's instances) are the host's: they go through
+// `services`, which the initializer also makes the renderer-wide `rendererServices`. The twin of
+// renderers/android's HostUIRenderer.kt.
 //
 // Every optional slot is present: the generated glue reads them ONCE at bind.
 import LeCodesCore
@@ -28,6 +29,12 @@ public final class HostUIRenderer: HostUI {
     }
 
     private func attach(_ parentId: Int, _ child: UINode, _ index: Int) {
+        // A text or an image under a text is an inline run (docs/plans/rich-text-plan.md): linked to
+        // its paragraph, no view in the hierarchy — the paragraph's label draws it.
+        if let paragraph = Nodes[parentId] as? UINodeText {
+            paragraph.insertRun(child, at: index)
+            return
+        }
         guard let container = Nodes[parentId] as? UINodeContainer else { return }
         container.insert(child, at: index)
     }
@@ -41,11 +48,16 @@ public final class HostUIRenderer: HostUI {
     }
 
     public func removeNode(parent: Int, child: Int) {
+        if let paragraph = Nodes[parent] as? UINodeText {
+            if let run = Nodes[child] { paragraph.removeRun(run) }
+            return
+        }
         guard let p = Nodes[parent] as? UINodeContainer, let c = Nodes[child] else { return }
         p.remove(c)
     }
 
-    /// The runtime frees this node (its yoga node goes right after): drop the node and the map entry.
+    /// The runtime frees this node (its yoga node goes when the runtime's entry point returns, after
+    /// this commit — before the frame's drain): drop the node and the map entry.
     public func releaseNode(id: Int) {
         guard let node = Nodes.remove(id) else { return }
         node.markRemoved()
@@ -90,9 +102,18 @@ public final class HostUIRenderer: HostUI {
         }
     }
 
-    public func layerOpen(node: Int) {
+    /// The host node registry (UINodeHost makes the instances): what `supported` asks.
+    public var nodeVersion: ((String) -> Int32)? { { [services] kind in services.nodeVersion(kind) } }
+
+    public var nodeCall: ((Int, String, WireIn, JSCallback, JSCallback) -> Void)? {
+        { [services] node, method, args, onComplete, onReject in
+            services.nodeCall(node: node, method: method, args: args, onComplete: onComplete, onReject: onReject)
+        }
+    }
+
+    public func layerOpen(node: Int, surface: Bool) {
         guard let layer = Nodes[node] else { return }
-        services.layerOpen(layer)
+        services.layerOpen(layer, surface: surface)
     }
 
     public func layerClose(node: Int) {
@@ -102,6 +123,22 @@ public final class HostUIRenderer: HostUI {
 
     public func registerFont(url: String, fontFamily: String, weight: Int32, style: Int32, onComplete: JSCallback, onReject: JSCallback) {
         services.registerFont(url: url, fontFamily: fontFamily, weight: Int(weight), style: Int(style), onComplete: onComplete, onReject: onReject)
+    }
+
+    /// The image of a url ahead of its view: the loader's own load and decode (ImageLoader.preload),
+    /// the box from points to the px a view's box has. Any other source (an `id:` buffer, an svg,
+    /// a canvas) is in memory already: nothing to bring. The fourth argument is the device cache's
+    /// mode (docs/cache.md): the loader's request is made in it — how an app brings pictures in
+    /// ahead of time and keeps them.
+    public var preloadImage: ((String, Int32, Int32, String, JSCallback, JSCallback) -> Void)? {
+        { url, width, height, cache, onComplete, onReject in
+            guard url.hasPrefix("http://") || url.hasPrefix("https://") else { Core.resolve(onComplete, reject: onReject); return }
+            let scale = UIScreen.main.scale
+            ImageLoader.preload(url, cache: cache, boxWidth: Int((CGFloat(width) * scale).rounded(.up)), boxHeight: Int((CGFloat(height) * scale).rounded(.up))) { loaded in
+                if loaded { Core.resolve(onComplete, reject: onReject) }
+                else { Core.reject(onComplete, reject: onReject, message: "The image could not be loaded: \(url)") }
+            }
+        }
     }
 
     public func showToast(message: String, duration: Int32) {
@@ -117,6 +154,13 @@ public final class HostUIRenderer: HostUI {
 
     /// nil → JS null: the node is not mounted or has never been laid out.
     public var getBoundingRect: ((Int) -> [Float]?)? { { node in Nodes[node]?.boundingRect() } }
+
+    /// A flow's input, injected by the host over its root view (`lecodes test --ios`).
+    public var debugInput: ((Int32, Float, Float, Float, Float, String) -> Bool)? {
+        { [services] kind, x, y, dx, dy, text in
+            services.debugInput(kind: kind, x: CGFloat(x), y: CGFloat(y), dx: CGFloat(dx), dy: CGFloat(dy), text: text)
+        }
+    }
 
     // MARK: - gestures
 
@@ -151,6 +195,16 @@ public final class HostUIRenderer: HostUI {
     /// the content height), true = a user scroll command.
     public func vlistScroll(node: Int, scrollY: Float, animated: Bool) {
         (Nodes[node] as? UINodeVList)?.applyScroll(CGFloat(scrollY), animated: animated)
+    }
+
+    /// A scrollable's scroll command and its read (points along its axis); a vlist has its own.
+    public var scrollTo: ((Int, Float, Bool) -> Void)? {
+        { node, offset, animated in Self.scrollable(node)?.scrollView.scrollTo(CGFloat(offset), animated: animated) }
+    }
+    public var getScroll: ((Int) -> [Float]?)? { { node in Self.scrollable(node)?.scrollView.scrollState } }
+    private static func scrollable(_ node: Int) -> UINodeScrollable? {
+        guard let n = Nodes[node] as? UINodeScrollable, !(n is UINodeVList) else { return nil }
+        return n
     }
 
     // MARK: - host-driven tweens

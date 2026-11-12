@@ -12,9 +12,10 @@ public enum FrameBatcher {
     private static var scheduled = false
 
     // The write buffers. A measured leaf is held as the NODE, never its raw id: the id can be freed
-    // between the request and the drain (a vlist item unmount frees its subtree synchronously) and
-    // markNodeDirty on freed memory is a use-after-free; the node carries the isRemoved flag the
-    // drain filters on.
+    // between the request and the drain — the runtime frees a destroyed subtree's yoga nodes at the
+    // end of its entry point, after the commit that brought their releaseNode, still inside
+    // Core.runTick and so before this drain (docs/tree.md "The host commit") — and markNodeDirty on
+    // freed memory is a use-after-free; the node carries the isRemoved flag the drain filters on.
     private static var nodesToUpdate: [ObjectIdentifier: UINode] = [:]
     private static var leafsToMeasure: [ObjectIdentifier: UINode] = [:]
     // The processing buffers — runTick reads them after the swap.
@@ -41,6 +42,15 @@ public enum FrameBatcher {
         scheduled = true
     }
 
+    /// The sheets taken out of their root since the last frame. One the same commit inserted again
+    /// was MOVED (a show() to the front: the runtime re-inserts a root's widgets in their new order)
+    /// and keeps where it stands; one still out at the frame owes its entrance (UINodeWidget).
+    private static var detachedWidgets: [ObjectIdentifier: UINodeWidget] = [:]
+
+    static func widgetDetached(_ widget: UINodeWidget) {
+        detachedWidgets[ObjectIdentifier(widget)] = widget
+    }
+
     private static func swapBuffers() -> Bool {
         guard scheduled else { return false }
         scheduled = false
@@ -51,6 +61,13 @@ public enum FrameBatcher {
 
     /// One frame, after Core.runTick.
     public static func runTick() {
+        // The removals of the commits since the last frame are final now: a sheet still out of its
+        // root owes its entrance (a moved one is in its root again).
+        if !detachedWidgets.isEmpty {
+            let detached = Array(detachedWidgets.values)
+            detachedWidgets.removeAll()
+            for widget in detached { widget.settleDetached() }
+        }
         // Every style write since the last frame sits in the core's dirty paint records — apply them
         // to the nodes BEFORE the layout pass. A non-empty batch counts as a mutation: the nodes'
         // setters request() themselves, so the pass below runs.
@@ -65,15 +82,20 @@ public enum FrameBatcher {
             processingLeafs.removeAll(keepingCapacity: true)
             processingNodes.removeAll(keepingCapacity: true)
         }
+        // Through `boxNode`: a text that asked as a root may be an inline run by now (the same commit
+        // linked it) — its paragraph is the one measured; dirtying the run would trip Yoga's assert.
         for leaf in processingLeafs.values where !leaf.isRemoved {
-            CreatorUI.markNodeDirty(leaf.id)
+            let measured = leaf.boxNode
+            if !measured.isRemoved { CreatorUI.markNodeDirty(measured.id) }
         }
         if let layoutFrame = onLayoutFrame {
             layoutFrame()
         } else {
             CreatorUI.recalculate()
         }
-        for node in processingNodes.values where !node.isRemoved {
+        for requested in processingNodes.values where !requested.isRemoved {
+            let node = requested.boxNode   // a run has no box to walk: its paragraph's
+            if node.isRemoved { continue }
             node.walkRequested = true
             node.updateLayout()
             node.walkRequested = false

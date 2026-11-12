@@ -3,7 +3,8 @@
 // generated glue of a method tagged `@permission` asks here before the call; a half whose need
 // depends on its arguments — webrtc's getUserMedia — asks by hand, the same way).
 //
-// The core carries the askers of the camera, the microphone and the location. A kind whose
+// The core carries the askers of the camera, the microphone, the location and the notifications
+// (alert, sound, badge: what local notifications' `schedule` asks through here). A kind whose
 // framework must not be linked into every app (speech: the Speech framework) is REGISTERED by the
 // plugin that brings it (`register(.speech, …)`); until then the host says it has no asker.
 //
@@ -14,9 +15,10 @@
 import AVFoundation
 import CoreLocation
 import UIKit
+import UserNotifications
 
 public enum PermissionKind: String, CaseIterable {
-    case camera, microphone, location, speech
+    case camera, microphone, location, speech, notifications
 }
 
 public enum PermissionState: String {
@@ -49,6 +51,7 @@ public final class Permissions {
         askers[.camera] = Self.capture(.video)
         askers[.microphone] = Self.capture(.audio)
         askers[.location] = PermissionAsker(query: { [location] in location.state }, request: { [location] then in location.request(then) })
+        askers[.notifications] = Self.notifications()
     }
 
     /// The asker of a kind the core does not carry (a plugin's, registered with its halves).
@@ -125,6 +128,46 @@ public final class Permissions {
             request: { then in AVCaptureDevice.requestAccess(for: media) { then($0 ? .granted : .denied) } }
         )
     }
+
+    /// Notifications: the center's authorization status. The center answers in a completion on its
+    /// own queue while `query` answers now, so the read waits for it — never on that queue, so waiting
+    /// on the main thread is safe — capped: an unanswered read is `.prompt`, and a request then asks
+    /// the center, which answers at once for a decided status. The center is touched only when asked
+    /// (it raises in a process without an app bundle, and the package's tests build every asker).
+    private static func notifications() -> PermissionAsker {
+        PermissionAsker(
+            query: {
+                let read = SettingsRead()
+                UNUserNotificationCenter.current().getNotificationSettings { settings in
+                    read.status = settings.authorizationStatus
+                    read.done.signal()
+                }
+                guard read.done.wait(timeout: .now() + 2) == .success, let status = read.status else { return .prompt }
+                return Permissions.state(status)
+            },
+            request: { then in
+                let center = UNUserNotificationCenter.current()
+                center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
+                    center.getNotificationSettings { then(Permissions.state($0.authorizationStatus)) }
+                }
+            }
+        )
+    }
+
+    private static func state(_ status: UNAuthorizationStatus) -> PermissionState {
+        switch status {
+        case .authorized, .provisional, .ephemeral: return .granted
+        case .notDetermined: return .prompt
+        default: return .denied
+        }
+    }
+}
+
+/// One read of the notification settings across the center's queue: `status` is written there
+/// before `done` signals.
+private final class SettingsRead {
+    let done = DispatchSemaphore(value: 0)
+    var status: UNAuthorizationStatus?
 }
 
 /// Location (while in use): CLLocationManager's status, its dialog answered through the delegate.

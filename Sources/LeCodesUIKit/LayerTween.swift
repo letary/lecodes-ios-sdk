@@ -32,10 +32,13 @@ enum LayerTween {
     static func key(_ prop: String) -> String { "lc.tween." + prop }
 
     /// The layer a prop's animation lives on: the node's view, the scrim's for a widget's
-    /// overlayColor, the dim layer for a screen's dim.
+    /// overlayColor, the dim layer for a screen's dim, the box's color layer for a backgroundColor
+    /// over a backdrop blur (none under glass: the color is the glass's tint — the runtime's).
     static func layer(of node: UINode, prop: String) -> CALayer? {
+        if node.isRun { return nil }   // a run (a text, an icon) has no layer: its paragraph draws it, per write
         if prop == "overlayColor" { return (node as? UINodeWidget)?.overlay?.layer }
         if prop == "dim" { return (node.view as? ScreenView)?.ensureDimLayer() }
+        if prop == "backgroundColor" { return node.box.backgroundColorLayer }
         return node.view.layer
     }
 
@@ -84,6 +87,7 @@ enum LayerTween {
         anim.autoreverses = pingPong && iterations != 1
         anim.speed = rate
         layer.add(anim, forKey: key(prop))
+        node.followShadow()   // the shadow plays the node layer's transform / opacity with it
         return true
     }
 
@@ -121,15 +125,24 @@ enum LayerTween {
     }
 
     /// The channel is the runtime's again: its landing write is in the node's record — apply it,
-    /// THEN drop the animation, in this transaction, so the presentation moves from the animation's
+    /// THEN drop the animation, in one transaction, so the presentation moves from the animation's
     /// value to the same value in the model.
+    ///
+    /// That transaction is the CURRENT one, never one of its own: a `begin` / `commit` pair with
+    /// nothing open around it goes to the render server at its `commit`, ahead of the rest of the
+    /// host commit this release is an op of. A screen that LEAVES lands at rest (the transition
+    /// restores its style) and is unmounted by the `dropView` that follows — in a later
+    /// transaction, so the screen that had slid away stood in place for a frame (seen over a map,
+    /// where nothing covers it). The implicit transaction commits at the end of the run loop's
+    /// turn, with the unmount.
     static func release(_ node: UINode, prop: String) {
         guard !node.isRemoved else { return }
-        CATransaction.begin()
+        let actionsOff = CATransaction.disableActions()
         CATransaction.setDisableActions(true)
         PaintBatch.applyPending(node)
         layer(of: node, prop: prop)?.removeAnimation(forKey: key(prop))
-        CATransaction.commit()
+        node.followShadow()
+        CATransaction.setDisableActions(actionsOff)
     }
 
     /// Is a claimed track playing on this node's layer for `prop`? (tests)

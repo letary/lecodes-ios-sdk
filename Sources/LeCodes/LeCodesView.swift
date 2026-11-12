@@ -5,8 +5,9 @@
 // `resize` rule, the keyboard (KeyboardLayoutController), the toasts, and the pointer entry a
 // check runner drives (the same hit-test a UITouch goes through). Layering invariant, like
 // Android's: surface-backed destinations (the 3D scene's Metal layer, the 2D scene's surface, a
-// native view, a promoted video) at the bottom and never animated, screens above them (the only
-// side a transition moves), the layers on top.
+// native view) at the bottom and never animated, screens above them (the only side a transition
+// moves), the layers on top. A destination is never a node (docs/tree.md): a native view's
+// instance view is presented here and nowhere else, a video is a node of a screen.
 //
 // One destination is current at a time (the runtime owns the stack). This view animates no change
 // of destination itself: a transition is the runtime's tween tracks on the two screen roots' own
@@ -27,22 +28,19 @@
 // confirm dialog, a no-op) answers with no pop; a swipe that ran back tells the runtime nothing.
 // A drilled-in PAGER's pop is the same swipe, the pager's own (PagerView answers it): both hear
 // a touch at the edge, and the runtime's answer — a router's pop, or a pager's — says whose it is.
-import AVFoundation
 import LeCodesCore
 import LeCodesUIKit
 import UIKit
 
 public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
     public private(set) weak var engine: LeCodesEngine?
-    /// The presented screen's root, nil while a scene / native view / video is the destination.
+    /// The presented screen's root, nil while a scene / native view is the destination.
     public private(set) var currentScreen: UINode?
     private var screenView: UIView?
-    /// The presented surface (a native view's instance, a video's player layer), at the bottom.
+    /// The presented surface (a scene's view, a native view's instance), at the bottom.
     private var surfaceView: UIView?
-    /// The node embedding the promoted native view's instance, which takes it back on close.
-    private var surfaceOwner: UINodeNativeView?
-    /// The presented native view's instance id (DestKind.native), for the owner lookup at release.
-    private var surfaceViewId: Int?
+    /// The mounted surface, the bottom of the stack: a surface's content layer goes right above it (LayerHost).
+    var surfaceBottom: UIView? { surfaceView }
     /// The scene views, kept while their scene is open (a screen pushed over a scene pauses it: the
     /// view leaves and comes back with its swap chain / surface when the scene is presented again).
     public private(set) var sceneView: SceneView?
@@ -179,10 +177,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         case DestKind.screen:
             if let node = dest.node { openScreen(node, above: above) }
         case DestKind.native:
-            let (view, owner) = nativeSurface(dest)
-            openSurface(view, dest, owner: owner)
-        case DestKind.video:
-            if let video = dest.node as? UINodeVideo { openSurface(videoSurface(video), dest) } else { leaveScreen() }
+            openSurface(nativeSurface(dest), dest)
         case DestKind.scene3d:
             openSurface(sceneSurface(), dest)
         case DestKind.scene2d:
@@ -191,7 +186,6 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
             leaveScreen()
             print("[LeCodesView] unknown destination kind \(dest.kind)")
         }
-        layers.bringToFront()   // the layers over the screen just mounted
     }
 
     /// The runtime dropped the destination that left: its transition landed (or none played). A
@@ -243,11 +237,16 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         // The container's color before the screens move, so any gap they expose (a zoom's scaled
         // edge) shows the incoming screen's color rather than black.
         applyScreenBackground(node)
-        // Under the screen that is leaving when the transition keeps that one on top; a surface is
-        // the bottom whatever is asked.
-        if let shown, !above, shown.superview === self { insertSubview(newView, belowSubview: shown) } else { addSubview(newView) }
+        // Over or under the screen that is leaving, as the transition asks; with none shown, under
+        // the app layers (the top of the stack — LayerHost) and over the surface and its content layers.
+        if let shown, shown.superview === self {
+            if above { insertSubview(newView, aboveSubview: shown) } else { insertSubview(newView, belowSubview: shown) }
+        } else if let app = layers.bottomAppLayerView {
+            insertSubview(newView, belowSubview: app)
+        } else {
+            addSubview(newView)
+        }
         node.updateLayout()
-        layers.bringToFront()
     }
 
     /// UIRootHost: a screen's background changed (a live re-theme). The presented one moves the
@@ -292,22 +291,52 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         currentScreen = nil
     }
 
-    // MARK: - surfaces (a native view, a promoted video)
+    // MARK: - surfaces (a native view)
 
-    /// The registerView instance's own view, fullscreen — promotion: it may be embedded in a screen
-    /// right now (`owner`: its node adopts it back when this destination closes).
-    private func nativeSurface(_ dest: PresentedDest) -> (view: UIView, owner: UINodeNativeView?) {
-        let owner = UINodeNativeView.embedding(viewId: dest.id)
+    /// The registerView instance's own view, fullscreen (the instance stays warm after a dismissal:
+    /// presented again, it is the view it was).
+    private func nativeSurface(_ dest: PresentedDest) -> UIView {
         guard let engine, let instance = engine.nativeViews.ensure(viewId: Int32(dest.id), viewName: dest.viewName ?? "", paramsJson: dest.paramsJson ?? "null") else {
-            return (NativeViews.placeholder(dest.viewName ?? ""), owner)
+            return NativeViews.placeholder(dest.viewName ?? "")
         }
-        return (instance.view, owner)
+        watchSurface(instance.view)
+        return instance.view
     }
 
-    /// A second player layer over the SAME player: playback continues, the embedded node (if any)
-    /// keeps showing the media, and a pop just drops this view.
-    private func videoSurface(_ video: UINodeVideo) -> UIView {
-        VideoSurfaceView(layer: video.makePlayerLayer())
+    /// The touch of a native destination, told to the runtime the way a scene's is (SceneView):
+    /// every finger that lands is the presented surface's touchStart (Core.emitTouchStart — the SDK
+    /// hands it to the view's `onTouchStart`), and a track a listener took is fed that finger's
+    /// moves (only when it asked for them), its end, its cancel. WATCHED (TouchWatcher): the view
+    /// keeps every gesture of its own, a track takes nothing from it. No click: a tap on the view
+    /// is the view's to tell. Once per view (the instance is warm across dismissals).
+    private func watchSurface(_ view: UIView) {
+        if view.gestureRecognizers?.contains(where: { $0 is TouchWatcher }) == true { return }
+        var positions: [Int32: CGPoint] = [:]
+        let watcher = TouchWatcher()
+        watcher.onDown = { [weak view] id, t in
+            guard let view else { return }
+            let p = t.location(in: view)
+            positions[id] = p
+            Core.emitTouchStart(fingerId: id, x: Float(p.x), y: Float(p.y))
+        }
+        watcher.onMove = { [weak view] id, t in
+            guard let view, let prev = positions[id], let track = TouchHandlers.get(id), track.hasMove else { return }
+            let p = t.location(in: view)
+            Core.touchMove(pointerId: id, x: Float(p.x), y: Float(p.y), deltaX: Float(p.x - prev.x), deltaY: Float(p.y - prev.y))
+            positions[id] = p
+        }
+        watcher.onUp = { [weak view] id, t in
+            guard let view, let prev = positions.removeValue(forKey: id) else { return }
+            let p = t.location(in: view)
+            TouchHandlers.remove(id)
+            Core.touchEnd(pointerId: id, x: Float(p.x), y: Float(p.y), deltaX: Float(p.x - prev.x), deltaY: Float(p.y - prev.y))
+        }
+        watcher.onCancel = { id in
+            guard positions.removeValue(forKey: id) != nil else { return }
+            TouchHandlers.remove(id)
+            Core.touchCancel(pointerId: id)
+        }
+        view.addGestureRecognizer(watcher)
     }
 
     // MARK: - the scenes (HostGL / HostScene2d + the scene destinations)
@@ -361,23 +390,20 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
     }
 
     /// A surface destination: `view` at the bottom, never moved. The screen that was shown is no
-    /// longer current and stays above the surface until the runtime drops it. `owner` = the node
-    /// a promoted native view returns to.
-    private func openSurface(_ view: UIView, _ dest: PresentedDest, owner: UINodeNativeView? = nil) {
+    /// longer current and stays above the surface until the runtime drops it.
+    private func openSurface(_ view: UIView, _ dest: PresentedDest) {
         leaveScreen()
-        mountSurface(view, kind: dest.kind, id: dest.id, owner: owner)
+        mountSurface(view, kind: dest.kind, id: dest.id)
     }
 
-    /// A surface other than the mounted one takes the bottom (the one before it is released: a
-    /// promoted native view returns to its node); a scene view takes its swap chain / surface when
-    /// it mounts. The same view presented again only changes what it is called.
-    private func mountSurface(_ view: UIView, kind: Int, id: Int, owner: UINodeNativeView? = nil) {
+    /// A surface other than the mounted one takes the bottom (the one before it is released); a
+    /// scene view takes its swap chain / surface when it mounts. The same view presented again only
+    /// changes what it is called.
+    private func mountSurface(_ view: UIView, kind: Int, id: Int) {
         pendingSurfaceRelease = false
         if surfaceView !== view {
             releaseSurface()
             surfaceView = view
-            surfaceOwner = owner
-            surfaceViewId = kind == DestKind.native ? id : nil
             view.removeFromSuperview()
             view.place(bounds)
             view.autoresizingMask = []
@@ -388,44 +414,15 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         surfaceId = id
     }
 
-    /// The surface leaves: a promoted native view goes back into its embedding node; a 3D scene's
-    /// view lets its swap chain go (the frame stops presenting).
+    /// The surface leaves; a 3D scene's view lets its swap chain go (the frame stops presenting).
     private func releaseSurface() {
         pendingSurfaceRelease = false
         guard let view = surfaceView else { return }
         surfaceView = nil
         view.removeFromSuperview()
         (view as? SceneView)?.destroySwapChain()
-        // The embedding node may have built its view only after the promotion (its paint came
-        // later): resolve it now as well as at open.
-        let owner = surfaceOwner ?? surfaceViewId.flatMap { UINodeNativeView.embedding(viewId: $0) }
-        surfaceOwner = nil
-        surfaceViewId = nil
         surfaceKind = DestKind.none
         surfaceId = 0
-        owner?.readopt()
-    }
-
-    /// UIRootHost: the registerView instance `viewId` is the presented destination right now.
-    public func isPromoted(viewId: Int) -> Bool { destKind == DestKind.native && destId == viewId && surfaceView != nil }
-
-    /// The fullscreen video's view: a black backdrop under the player layer.
-    private final class VideoSurfaceView: UIView {
-        private let playerLayer: AVPlayerLayer
-        init(layer: AVPlayerLayer) {
-            playerLayer = layer
-            super.init(frame: .zero)
-            backgroundColor = .black
-            self.layer.addSublayer(layer)
-        }
-        @available(*, unavailable) required init?(coder: NSCoder) { nil }
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            playerLayer.frame = bounds
-            CATransaction.commit()
-        }
     }
 
     /// The screen a back reveals, by the runtime's answer.
@@ -512,7 +509,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
             return
         }
         view.place(bounds)
-        if let surface = surfaceView { insertSubview(view, aboveSubview: surface) } else { insertSubview(view, at: 0) }
+        if let below = layers.topSurfaceLayerView ?? surfaceView { insertSubview(view, aboveSubview: below) } else { insertSubview(view, at: 0) }
         s.revealed.updateLayout()
     }
 
@@ -531,7 +528,7 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
 
     // MARK: - layers (docs/plans/widgets-plan.md: the app layer, a surface's content)
 
-    func layerOpen(_ node: UINode) { layers.open(node) }
+    func layerOpen(_ node: UINode, surface: Bool) { layers.open(node, surface: surface) }
     func layerClose(_ node: UINode) { layers.close(node) }
     /// The open layers' roots, in open order.
     public var openLayers: [UINode] { layers.roots }
@@ -543,7 +540,6 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
         // …and a screen that was still leaving goes with its node
         if node is UINodeScreen, node.view.superview === self { node.view.removeFromSuperview() }
         if layers.contains(node) { layers.close(node) }
-        if surfaceOwner === node { surfaceOwner = nil }
     }
 
     // MARK: - toasts
@@ -610,6 +606,80 @@ public final class LeCodesView: UIView, UIRootHost, SystemBackSwipeDelegate {
     public func pointerCancel(_ pointerId: Int32) {
         pointerTargets.removeValue(forKey: pointerId)?.pointerCancel(pointerId)
     }
+
+    // MARK: - a flow's input (HostUI.debugInput; `lecodes test --ios`, tools/cli/src/hosts/deviceRunner.ts)
+
+    /// The pointer a flow drives: one finger.
+    private static let flowPointer: Int32 = 9001
+
+    /// A flow's input, the way a finger or a key would reach this view — no tool injects a touch
+    /// into a simulator or a phone, so the app does it itself. kind 0 / 1 / 2: the scripted pointer
+    /// above (a field under it is focused, as UIKit would on a touch); 3: `text` into the focused
+    /// field; 4: the scroll view under (x, y) that scrolls along the asked axis, moved by (dx, dy).
+    /// Called from inside a JS call (the dev channel's message), so what the input makes the app
+    /// run is posted to the JS thread's next turn; the answer says only whether something takes it.
+    public func debugInput(kind: Int32, x: CGFloat, y: CGFloat, dx: CGFloat, dy: CGFloat, text: String) -> Bool {
+        let p = CGPoint(x: x, y: y)
+        switch kind {
+        case 0:
+            JSThread.post { [weak self] in
+                guard let self else { return }
+                if let field = self.ancestor(of: self.hitTest(p, with: nil), where: { $0 is UITextField || $0 is UITextView }) {
+                    field.becomeFirstResponder()
+                } else {
+                    self.pointerDown(Self.flowPointer, x: x, y: y)
+                }
+            }
+            return true
+        case 1:
+            JSThread.post { [weak self] in self?.pointerMove(Self.flowPointer, x: x, y: y) }
+            return true
+        case 2:
+            JSThread.post { [weak self] in self?.pointerUp(Self.flowPointer, x: x, y: y) }
+            return true
+        case 3:
+            guard let field = focusedField(in: self) else { return false }
+            JSThread.post { field.insertText(text) }
+            return true
+        case 4:
+            let scrolls: (UIView) -> Bool = { v in
+                guard let s = v as? UIScrollView, s.isScrollEnabled else { return false }
+                let inset = s.adjustedContentInset
+                return (dy != 0 && s.contentSize.height + inset.top + inset.bottom > s.bounds.height + 0.5)
+                    || (dx != 0 && s.contentSize.width + inset.left + inset.right > s.bounds.width + 0.5)
+            }
+            guard let scroll = ancestor(of: hitTest(p, with: nil), where: scrolls) as? UIScrollView else { return false }
+            JSThread.post {
+                let inset = scroll.adjustedContentInset
+                let maxX = max(-inset.left, scroll.contentSize.width + inset.right - scroll.bounds.width)
+                let maxY = max(-inset.top, scroll.contentSize.height + inset.bottom - scroll.bounds.height)
+                let to = CGPoint(x: min(max(scroll.contentOffset.x + dx, -inset.left), maxX),
+                                 y: min(max(scroll.contentOffset.y + dy, -inset.top), maxY))
+                scroll.setContentOffset(to, animated: false)
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// `view` or the nearest view above it (up to this one) that `matches`.
+    private func ancestor(of view: UIView?, where matches: (UIView) -> Bool) -> UIView? {
+        var v = view
+        while let cur = v {
+            if matches(cur) { return cur }
+            if cur === self { return nil }
+            v = cur.superview
+        }
+        return nil
+    }
+
+    /// The field that has the keyboard, under `view`.
+    private func focusedField(in view: UIView) -> (UIView & UIKeyInput)? {
+        if view.isFirstResponder, let input = view as? (UIView & UIKeyInput) { return input }
+        for sub in view.subviews { if let hit = focusedField(in: sub) { return hit } }
+        return nil
+    }
 }
 
 extension LeCodesView: UIGestureRecognizerDelegate {
@@ -620,6 +690,6 @@ extension LeCodesView: UIGestureRecognizerDelegate {
     /// The dismissal tap only sees touches that land outside every control, while the keyboard is
     /// up and the focused input allows dismissal.
     public func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        g === dismissTap ? keyboard.shouldDismiss(onTouchIn: touch.view) : true
+        g === dismissTap ? keyboard.shouldDismiss(on: touch) : true
     }
 }

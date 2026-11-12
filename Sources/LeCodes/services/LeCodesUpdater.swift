@@ -22,6 +22,14 @@
 // Otherwise it is discarded — a store build compiled after the OTA push carries a newer date and
 // wins, so a store release still fixes a broken OTA. A changed source URL discards it as well.
 //
+// The app may name another source for itself (`app.update.setSource(url)` of the SDK — a dev
+// channel for the people who test a build first): `setSourceOverride` keeps the URL in a file of
+// its own beside the state, outside the JS world, and `sourceURL` — what a shell boots with — is
+// that URL, else the build's. Nothing else knows of it: the rules below are the same for every
+// source, and the override is a changed source like any other — the cached update is dropped, so
+// the next launch is a first one (it waits for the check) over the embedded bundle. It outlives
+// store updates; `setSourceOverride(nil)` returns to the build's source.
+//
 // What a download must be to replace the active bundle (the header lines every compiled bundle
 // opens with): the SAME contract major as this runtime (`// sdk:` — the platform serves one by
 // `?sdk=`, a custom url is one file, and the runtime would refuse another major on `run()`, which
@@ -29,6 +37,15 @@
 // now (`// last-updated:`, the compile time — a store build that ships newer code than the source
 // still holds must not be downgraded by its first launch). A refused download is not activated;
 // its ETag is kept so the next check still costs a 304.
+//
+// The first launch of a binary has no validators to send, and `lecodes app sync` compiles the
+// embedded bundle itself, so its bytes never equal the source's: that check would download the
+// whole bundle just to apply the date rule to it. Instead it sends the embedded bundle's compile
+// date as `If-Modified-Since`: a source whose bundle is not newer (the platform's serveFile, nginx,
+// S3 — the file's mtime against the date) answers 304, the embedded bundle runs, and the 304's own
+// validators are stored, so the next launch runs at once and revalidates by ETag. A newer source
+// answers 200 and the download applies as above. The date rule after a download stays the authority:
+// a file rewritten in place (a newer mtime, the same old code) costs one download and is refused.
 //
 // Swift + URLSession only: nothing of the engine. A `file://` source works (the dev loop, the tests).
 import CryptoKit
@@ -96,6 +113,23 @@ public enum LeCodesUpdater {
         return got > have
     }
 
+    /// What the first launch of a binary sends in place of validators: the embedded bundle's
+    /// `// last-updated:` as an HTTP-date (second precision, floored — the format has none better),
+    /// nil without the line (an older compiler: the check downloads as before).
+    static func ifModifiedSince(of embedded: Data) -> String? {
+        guard let iso = header(of: embedded).lastUpdated, iso.count >= 19 else { return nil }
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(identifier: "UTC")
+        parser.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        guard let date = parser.date(from: String(iso.prefix(19))) else { return nil }
+        let http = DateFormatter()
+        http.locale = Locale(identifier: "en_US_POSIX")
+        http.timeZone = TimeZone(identifier: "UTC")
+        http.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return http.string(from: date)
+    }
+
     private struct State: Codable {
         var url: String            // the source the cached update came from
         var baseline: String       // sha256 of the EMBEDDED bundle at download time (or the one it was re-baselined onto)
@@ -136,6 +170,40 @@ public enum LeCodesUpdater {
         return url
     }
 
+    // MARK: - The source the app set for itself (app.update.setSource)
+
+    /// Whether this process booted as a shell (LeCodesShell.boot sets it): only a shell's updater
+    /// reads the override, so only a shell answers `app.update` (host/AppHost).
+    nonisolated(unsafe) public static var isShell = false
+
+    private static var sourceFile: URL { storageDir.appendingPathComponent("update-source.txt") }
+
+    /// The source the app set with `setSourceOverride`; nil while it updates from the build's.
+    public static var sourceOverride: URL? {
+        guard let text = try? String(contentsOf: sourceFile, encoding: .utf8) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : URL(string: trimmed)
+    }
+
+    /// Make `url` the source every later launch updates from; nil returns to the build's. False
+    /// when it is not a URL (no scheme) or could not be stored — nothing changed.
+    @discardableResult
+    public static func setSourceOverride(_ url: URL?) -> Bool {
+        guard let url else {
+            try? FileManager.default.removeItem(at: sourceFile)
+            return !FileManager.default.fileExists(atPath: sourceFile.path)
+        }
+        guard url.scheme != nil else { return false }   // a string no check could ever fetch
+        do {
+            try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
+            try Data(url.absoluteString.utf8).write(to: sourceFile, options: .atomic)
+            return true
+        } catch { return false }
+    }
+
+    /// Where this app updates from: the source it set for itself, else the build's.
+    public static var sourceURL: URL? { sourceOverride ?? configuredURL }
+
     /// The bundle the app carries (`App/Resources/app.js`, what `lecodes app sync` embeds).
     public static var embeddedBundleURL: URL? {
         Bundle.main.url(forResource: "app", withExtension: "js")
@@ -159,7 +227,7 @@ public enum LeCodesUpdater {
         guard var state = loadState() else { return embedded }
 
         // A changed source URL invalidates what the old source delivered.
-        guard state.url == (source ?? configuredURL)?.absoluteString,
+        guard state.url == (source ?? sourceURL)?.absoluteString,
               let cachedData = try? Data(contentsOf: updateFile),
               sha256(cachedData) == state.hash,                    // integrity: a partial / corrupt file
               let cached = String(data: cachedData, encoding: .utf8) else {
@@ -189,7 +257,7 @@ public enum LeCodesUpdater {
     /// reads its absence as the first launch of this binary. Read it AFTER `activeBundle()`, which
     /// migrates or clears the state a store update left. False with no source or no embedded bundle.
     public static func hasUsableState(embeddedAt url: URL? = nil, source: URL? = nil) -> Bool {
-        guard let source = source ?? configuredURL,
+        guard let source = source ?? sourceURL,
               let embeddedURL = url ?? embeddedBundleURL,
               let embeddedData = try? Data(contentsOf: embeddedURL) else { return false }
         return isUsable(loadState(), baseline: sha256(embeddedData), source: source)
@@ -209,7 +277,7 @@ public enum LeCodesUpdater {
     /// state, the local bundle keeps running. `onDone` is called on a background queue.
     public static func checkForUpdate(url: URL? = nil, embeddedAt: URL? = nil,
                                       onDone: (@Sendable (UpdateResult) -> Void)? = nil) {
-        guard let source = url ?? configuredURL else { onDone?(.unconfigured); return }
+        guard let source = url ?? sourceURL else { onDone?(.unconfigured); return }
         guard let embeddedURL = embeddedAt ?? embeddedBundleURL,
               let embeddedData = try? Data(contentsOf: embeddedURL) else {
             onDone?(.failed("no embedded bundle")); return
@@ -219,11 +287,15 @@ public enum LeCodesUpdater {
         var request = URLRequest(url: source)
         request.cachePolicy = .reloadIgnoringLocalCacheData   // our own conditional logic below
         let state = loadState()
-        // Only revalidate against a cache that is actually usable for this binary + URL.
+        // Only revalidate against a cache that is actually usable for this binary + URL; without one
+        // (the first launch of this binary) the embedded bundle's compile date stands in: a source
+        // that is not newer answers 304 instead of a bundle the date rule would refuse anyway.
         let usable = isUsable(state, baseline: baseline, source: source)
         if usable, let state {
             if let etag = state.etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
             if let lm = state.lastModified { request.setValue(lm, forHTTPHeaderField: "If-Modified-Since") }
+        } else if let since = ifModifiedSince(of: embeddedData) {
+            request.setValue(since, forHTTPHeaderField: "If-Modified-Since")
         }
 
         URLSession.shared.dataTask(with: request) { data, response, error in
@@ -231,7 +303,25 @@ public enum LeCodesUpdater {
             // A file:// source answers with no HTTP response: it is a 200.
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 200
-            if status == 304 { onDone?(.upToDate); return }
+            if status == 304 {
+                // The source is not newer than the embedded bundle (the date stood in for a state):
+                // record it as this binary's state, with the 304's validators, so the next launch
+                // runs at once and revalidates by ETag. The pair rule holds: the file is the
+                // embedded bundle itself.
+                if !usable {
+                    let newState = State(
+                        url: source.absoluteString, baseline: baseline, hash: baseline,
+                        etag: http?.value(forHTTPHeaderField: "ETag"),
+                        lastModified: http?.value(forHTTPHeaderField: "Last-Modified")
+                    )
+                    do {
+                        try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
+                        try embeddedData.write(to: updateFile, options: .atomic)
+                        try JSONEncoder().encode(newState).write(to: stateFile, options: .atomic)
+                    } catch { onDone?(.failed("store failed: \(error.localizedDescription)")); return }
+                }
+                onDone?(.upToDate); return
+            }
             guard status == 200, let data, !data.isEmpty else {
                 onDone?(.failed("HTTP \(status)")); return
             }

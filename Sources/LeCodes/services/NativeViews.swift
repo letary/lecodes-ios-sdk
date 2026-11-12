@@ -1,10 +1,11 @@
-// The registerView registry (docs/navigation-presentable-plan.md): the host registers named view
-// factories (`engine.registerView("qrScanner") { params, channel in … }`) and the SDK's NativeView
-// elements talk to them over HostUI.viewCall (the call / event protocol shared with the
-// service channel: values, ChannelSettle.swift). One SDK NativeView instance (its stable `viewId`) maps to at most one live
-// native instance, reused across fullscreen / embedded mounts — that reuse IS the promotion
-// semantics; instances are created lazily at mount time by the renderer (renderers/uikit) and
-// destroyed on the world swap (viewIds restart per project). Main thread only.
+// The registerView registry: the host registers named view factories (`engine.registerView("qrScanner")
+// { params, channel in … }`) and the SDK's NativeView instances talk to them over HostUI.viewCall (the
+// call / event protocol shared with the service channel: values, ChannelSettle.swift). A view is a
+// DESTINATION, never a node of a layout (docs/tree.md, "A node or a destination"): one SDK NativeView
+// (its stable `viewId`) maps to at most one live native instance, made when it is first presented
+// (LeCodesView), kept warm across dismissals — presented again, it is the view it was — and
+// destroyed on the world swap (viewIds restart per project). A plugin's surface in a layout is a
+// host node (HostNodes.swift). Main thread only.
 import Foundation
 import UIKit
 import LeCodesCore
@@ -24,8 +25,8 @@ public struct NativeViewChannel {
     }
 }
 
-/// One live plugin view: `view` is mounted as a fullscreen destination or an embedded node;
-/// `call` settles asynchronously; `destroy` runs when the instance is evicted.
+/// One live plugin view: `view` is mounted as the fullscreen destination; `call` settles
+/// asynchronously; `destroy` runs when the instance is evicted.
 public protocol NativeViewInstance: AnyObject {
     var view: UIView { get }
     func call(_ method: String, _ args: [Any], _ settle: ChannelSettle)

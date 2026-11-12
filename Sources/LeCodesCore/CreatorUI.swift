@@ -34,6 +34,14 @@ public enum CreatorUI {
     }
     /// Yoga permits manual dirtying of MEASURE nodes only (a leaf whose intrinsic size changed).
     public static func markNodeDirty(_ node: Int) { lc_uiMarkNodeDirty(Core.node(node)) }
+    /// The node's `width` / `height` STYLE as fixed points (the core's px = points here), nil where
+    /// it is a percent, `auto` or unset — not its laid-out box. What an IMAGE RUN's box is made of
+    /// (docs/plans/rich-text-plan.md rule 10: a run has no yoga box).
+    public static func sizeStyle(_ node: Int) -> (width: Float?, height: Float?) {
+        var w: Float = 0, h: Float = 0
+        let mask = lc_uiNodeSizeStyle(Core.node(node), &w, &h)
+        return ((mask & 1) != 0 ? w : nil, (mask & 2) != 0 ? h : nil)
+    }
     /// A scrollable's content extent, logical px.
     public static func contentHeight(_ node: Int) -> Float { lc_uiContentHeight(Core.node(node)) }
     public static func contentWidth(_ node: Int) -> Float { lc_uiContentWidth(Core.node(node)) }
@@ -69,6 +77,16 @@ public enum CreatorUI {
             radiusUnits: (g.rUnitX == 1 ? .fraction : .px, g.rUnitY == 1 ? .fraction : .px))
     }
 
+    /// The shadows of a shadow id (copies), drop and inset ones in one list, [0] the first written =
+    /// on top; empty for 0 / an unknown id.
+    public static func shadows(_ id: UInt32) -> [Shadow] {
+        var count: UInt32 = 0
+        guard id != 0, let s = lc_uiShadowOf(id, &count), count > 0 else { return [] }
+        return (0..<Int(count)).map {
+            Shadow(x: s[$0].x, y: s[$0].y, blur: s[$0].blur, spread: s[$0].spread, color: s[$0].color, inset: s[$0].inset != 0)
+        }
+    }
+
     // MARK: - Safe area, density, the state layers
 
     /// The global safe paddings (root 0: every live root re-resolves its safe- / comfort- styles),
@@ -97,6 +115,25 @@ public enum CreatorUI {
     public static func vlistUpdateLayout(_ list: Int) { lc_uiVlistUpdateLayout(Core.node(list)) }
     /// An item's absolute top (physical px) by its root node; NaN when it is not mounted.
     public static func vlistItemOffset(_ list: Int, itemRoot: Int) -> Float { lc_uiVlistItemOffsetOf(Core.node(list), Core.node(itemRoot)) }
+}
+
+/// One shadow as the core resolved it (CUIShadow of creator-ui.h; `boxShadow`,
+/// docs/plans/shadow-plan.md): the node's rounded box grown by `spread`, moved by (`x`, `y`), blurred
+/// by `blur` — CSS's blur radius, the Gaussian's sigma = blur / 2 (CALayer.shadowRadius takes the
+/// sigma). Points (the core runs at density 1 on iOS); the color is the core's 0xRRGGBBAA.
+/// `inset` (CSS `inset`, docs/plans/shadow-inset-plan.md): painted INSIDE the box — above the node's
+/// background, below its children, clipped to the rounded box — its inner rect the box moved by
+/// (`x`, `y`) and shrunk by `spread`; false = a drop shadow outside the box.
+public struct Shadow: Equatable {
+    public let x: Float
+    public let y: Float
+    public let blur: Float
+    public let spread: Float
+    public let color: UInt32
+    public let inset: Bool
+    public init(x: Float, y: Float, blur: Float, spread: Float, color: UInt32, inset: Bool = false) {
+        self.x = x; self.y = y; self.blur = blur; self.spread = spread; self.color = color; self.inset = inset
+    }
 }
 
 /// One gradient layer as the core resolved it (CUIGradient of creator-ui.h). Colors are the core's

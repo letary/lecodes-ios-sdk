@@ -194,9 +194,9 @@ final class KeyboardLayoutController {
         if let root = shrunkRoot { overrideRootSafeBottom(root, 0) }
     }
 
-    /// Re-resolve ONE root's dynamic styles with `bottom` as its bottom safe inset, the globals
-    /// untouched: 0 collapses it for the root the keyboard shrinks (the keyboard stands in for the
-    /// home indicator), the real value restores it.
+    /// The keyboard's bottom of ONE root, the globals untouched (creator-ui `overrideRootSafeBottom`,
+    /// a state of the root): 0 collapses it for the root the keyboard shrinks (the keyboard stands
+    /// in for the home indicator), a negative value lets go — the root reads its own edge again.
     private func overrideRootSafeBottom(_ root: UINode, _ bottom: CGFloat) {
         guard !root.isRemoved else { return }   // nothing left to re-resolve, and the walk would run over freed memory
         CreatorUI.overrideRootSafeBottom(root.id, bottom: Float(bottom))
@@ -217,7 +217,7 @@ final class KeyboardLayoutController {
 
         if let root = target, let scroll = insetModeScrollable(in: root) {
             if let prev = shrunkRoot {   // mode switch: the full layout first
-                overrideRootSafeBottom(prev, realSafeInsets.bottom)
+                overrideRootSafeBottom(prev, -1)
                 clearShrunkRoot()
                 requestLayout(prev)
             }
@@ -237,7 +237,7 @@ final class KeyboardLayoutController {
         shrunkOverlap = next != nil ? overlap : 0
         Core.setShrunkRoot(next?.id ?? 0, overlap: Float(shrunkOverlap))
         if let previous, previous !== next {
-            overrideRootSafeBottom(previous, realSafeInsets.bottom)
+            overrideRootSafeBottom(previous, -1)
             requestLayout(previous)
         }
         if let next {
@@ -321,8 +321,8 @@ final class KeyboardLayoutController {
 
     /// A clean tap outside every control while the keyboard is up (the host's tap recognizer asks
     /// on the touch): only when the focused input allows it.
-    func shouldDismiss(onTouchIn view: UIView?) -> Bool {
-        keyboardInset > 0 && activeInputDismiss && !KeyboardDismissal.insideControl(view, root: host)
+    func shouldDismiss(on touch: UITouch) -> Bool {
+        keyboardInset > 0 && activeInputDismiss && !KeyboardDismissal.insideControl(touch, root: host)
     }
 
     /// Close the keyboard and drop focus: the first responder inside the root resigns, its blur

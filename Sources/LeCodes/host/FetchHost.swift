@@ -1,4 +1,5 @@
-// The `fetch` table (fetch.d.ts): HTTP over URLSession, the buffer store the response bodies land
+// The `fetch` table (fetch.d.ts): HTTP over URLSession (through CachedHTTP — the device cache's
+// modes and the time limit are carried out there), the buffer store the response bodies land
 // in (Buffers — every `systemId` the SDK holds is an entry there), the local assets by name (the
 // app's hook, the SDK's own resource bundle, the files root — cached per name, dropped on write /
 // remove) and the two system buffers (the IBL, the uberarchive).
@@ -65,8 +66,10 @@ final class FetchHost: HostFetch {
 
     // MARK: - request
 
+    // `cache` / `timeoutMs` (the device cache's mode and the request's time limit, docs/cache.md) are
+    // CachedHTTP's to carry out; a copy settles as status 200 with the third value (`cached`) true.
     func request(url: String, method: String, headers: [String], body: String?, form: [FetchFormEntry],
-                 onComplete: JSCallback, onReject: JSCallback, onProgress: JSCallback) {
+                 cache: String, timeoutMs: Int32, onComplete: JSCallback, onReject: JSCallback, onProgress: JSCallback) {
         let progress: JSCallback? = onProgress != 0 ? onProgress : nil
         // `id:<n>`: an asset the store already holds — resolve to it with status 200.
         if url.hasPrefix("id:") {
@@ -99,17 +102,12 @@ final class FetchHost: HostFetch {
         }
 
         let settle = Settle(url: url, onComplete: onComplete, onReject: onReject, onProgress: progress)
-        if progress != nil {
-            // The streaming path: a delegate reports progress; the session invalidates itself after.
-            let delegate = ProgressDelegate(settle)
-            let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-            session.dataTask(with: request).resume()
-            session.finishTasksAndInvalidate()
-        } else {
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                guard let data else { settle.reject((error?.localizedDescription ?? "Unknown error")); return }
-                settle.resolve(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0)
-            }.resume()
+        CachedHTTP.request(request, url: url, cache: cache, timeoutMs: timeoutMs,
+                           onProgress: progress != nil ? { loaded, total in settle.progress(loaded: loaded, total: total) } : nil) { result in
+            switch result {
+            case .success(let answer): settle.resolve(answer.data, status: answer.status, cached: answer.cached)
+            case .failure(let none): settle.reject(none.message)
+            }
         }
     }
 
@@ -125,9 +123,9 @@ final class FetchHost: HostFetch {
             self.url = url; self.onComplete = onComplete; self.onReject = onReject; self.onProgress = onProgress
         }
         private func take() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
-        func resolve(_ data: Data, status: Int) {
+        func resolve(_ data: Data, status: Int, cached: Bool) {
             guard take() else { return }
-            Core.resolve(onComplete, reject: onReject, [.int(Buffers.add(data)), .int(Int32(status))])
+            Core.resolve(onComplete, reject: onReject, [.int(Buffers.add(data)), .int(Int32(status)), .bool(cached)])
             if let onProgress { Core.free(onProgress) }
         }
         func reject(_ message: String) {
@@ -136,38 +134,15 @@ final class FetchHost: HostFetch {
             Core.reject(onComplete, reject: onReject, message: "\(message): \(url)")
             if let onProgress { Core.free(onProgress) }
         }
+        /// Nothing after the settle: the handle is freed with it, and a request the time limit ended
+        /// may still hear of bytes on their way.
         func progress(loaded: Int, total: Int?) {
             guard let onProgress else { return }
+            lock.lock(); defer { lock.unlock() }
+            if done { return }
             var arg: [(String, LeValue)] = [("loaded", .int(Int32(clamping: loaded)))]
             if let total { arg.append(("total", .int(Int32(clamping: total)))) }
             Core.callBorrowed(onProgress, [.object(arg)])
-        }
-    }
-
-    private final class ProgressDelegate: NSObject, URLSessionDataDelegate {
-        private let settle: Settle
-        private var chunks = Data()
-        private var total: Int?
-        private var status = 0
-        private var lastReport: CFAbsoluteTime = 0
-        init(_ settle: Settle) { self.settle = settle }
-
-        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-            status = (response as? HTTPURLResponse)?.statusCode ?? 200
-            if let length = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init) { total = length }
-            completionHandler(.allow)
-        }
-        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-            chunks.append(data)
-            let now = CFAbsoluteTimeGetCurrent()
-            guard now - lastReport >= 0.05 else { return }   // ~20 reports a second at most
-            lastReport = now
-            settle.progress(loaded: chunks.count, total: total)
-        }
-        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            if let error { settle.reject(error.localizedDescription); return }
-            settle.progress(loaded: chunks.count, total: total)   // the final report, then the settle
-            settle.resolve(chunks, status: status)
         }
     }
 

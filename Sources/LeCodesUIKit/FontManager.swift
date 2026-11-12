@@ -98,6 +98,7 @@ enum TextNodes {
             guard let n = w.node, !n.isRemoved else { nodes[k] = nil; continue }
             (n as? UINodeText)?.fontChanged()
             (n as? UINodeInput)?.fontChanged()
+            (n as? UINodeImage)?.fontChanged()   // an image run: its x-height
         }
     }
 }

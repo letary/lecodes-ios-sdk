@@ -78,6 +78,9 @@ public protocol SheetScrollable: UIScrollView {
 /// reasons: a sheet is anchored to the BOTTOM edge, so there is a hard stop at the top detent —
 /// lifting it would open a bare strip underneath (neither UISheetPresentationController nor
 /// Android's BottomSheetBehavior lets you drag past the expanded state).
+/// The DRAG is reported while a listener asks (TREE_FLAG_SHEET_DRAG, the SDK's `onDragStart`): its
+/// start when the sheet takes the gesture, its moves, its end with where the sheet goes from there
+/// (fireDrag) — the finger's part only, never the settle or a programmatic move.
 public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
     private unowned let widget: UINodeWidget
     private var view: UIView { widget.view }
@@ -118,13 +121,37 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
         widget.box.offsetY = offset
     }
 
+    /// A detent move. Inside its own transaction with the implicit actions ON: the programmatic
+    /// moves (`sheetDetent`, the exit's -1) arrive from PaintBatch.sync, whose transaction turns
+    /// them off — a record is a model write — and a UIView animation IS an implicit action, so
+    /// without this the transform jumped to the target and a hide() put the sheet below the edge at
+    /// once, no slide (the entrance was never hit: it is posted out of the sync).
     private func animate(to target: CGFloat, damping: CGFloat, velocity: CGFloat = 0, beginFromCurrent: Bool = true) {
         guard Animations.enabled else { applyOffset(target); return }
         var options: UIView.AnimationOptions = [.allowUserInteraction]
         if beginFromCurrent { options.insert(.beginFromCurrentState) }
+        CATransaction.begin()
+        CATransaction.setDisableActions(false)
         UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: damping, initialSpringVelocity: velocity, options: options) {
             self.applyOffset(target)
         }
+        CATransaction.commit()
+    }
+
+    /// The slide below the edge on a programmatic hide() (a scrim tap, a button). Shorter than the
+    /// runtime's hold (the sheet's 250 ms transition, after which the view is unmounted), no spring:
+    /// a 300 ms spring was cut at its tail. Ease-IN: the sheet starts leaving gently and is gone at
+    /// speed — an ease-out crawled at the screen edge for its last frames and read as slow. A
+    /// drag-dismiss never comes here (it carries the finger's velocity: animateSettle). Android's
+    /// EXIT_DURATION / EXIT_EASE_IN, for the same reasons.
+    private func animateExit(to target: CGFloat) {
+        guard Animations.enabled else { applyOffset(target); return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(false)
+        UIView.animate(withDuration: 0.24, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseIn]) {
+            self.applyOffset(target)
+        }
+        CATransaction.commit()
     }
 
     /// After the base frame landed: re-compose the offset; the first valid layout plays the entrance.
@@ -143,23 +170,29 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
-    /// The widget left its root (UINodeWidget.attached(to: nil)): the entrance is owed again at the
-    /// next mount's first laid-out frame, and the exit's offset (the slide below the edge) must not
+    /// The widget left its root and stayed out until the frame (UINodeWidget.settleDetached — one
+    /// inserted again in the same commit was moved, and keeps all this): the entrance is owed again
+    /// at the next mount's first laid-out frame, and the exit's offset (the slide below the edge) must not
     /// be what the re-shown sheet re-composes to — the view persists on this host, so the offset is
     /// put back to the base frame here, not dropped with a view. Android's twin.
     func unmounted() {
         view.layer.removeAnimation(forKey: "transform")   // a settle / slide-out still in flight
         entrancePlayed = false
+        dragReported = false
         applyOffset(0)
     }
 
     /// The programmatic target (`sheetDetent`). Never fires the detent event.
     public func setDetent(_ index: Int, animated: Bool) {
+        let exiting = targetIndex < 0
         targetIndex = index >= 0 ? min(max(index, 0), detents.count - 1) : -1
         if targetIndex >= 0 { settledIndex = targetIndex }
+        // Already sliding out (a drag-dismiss the SDK answered with hide()): the -1 that comes back
+        // must not restart the slide.
+        if exiting && targetIndex < 0 { return }
         guard entrancePlayed, hostHeight > 0 else { return }   // the entrance lands on the target
         let target = offset(forDetent: targetIndex)
-        if animated { animate(to: target, damping: 0.9) } else { applyOffset(target) }
+        if !animated { applyOffset(target) } else if targetIndex < 0 { animateExit(to: target) } else { animate(to: target, damping: 0.9) }
     }
 
     // MARK: - the pan + the inner-scroll handoff
@@ -167,6 +200,8 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
     private var dragStartOffset: CGFloat = 0
     private var activeScroll: SheetScrollable?
     private var sheetOwnsDrag = true
+    /// The drag whose start was reported, and whose end is owed.
+    private var dragReported = false
 
     @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
         guard let host = view.superview else { return }
@@ -181,6 +216,7 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
             } else {
                 sheetOwnsDrag = true
                 pinScroll()
+                fireDrag(.start, at: point(of: gesture))
             }
         case .changed:
             let translation = gesture.translation(in: host).y
@@ -191,6 +227,7 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
                     gesture.setTranslation(.zero, in: host)
                     dragStartOffset = currentOffset
                     pinScroll()
+                    fireDrag(.start, at: point(of: gesture))
                 }
                 return
             }
@@ -202,6 +239,8 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
                 applyOffset(0)
                 gesture.setTranslation(.zero, in: host)
                 dragStartOffset = 0
+                // the drag is the list's from here: the sheet stands on its top detent
+                fireDrag(.end, at: point(of: gesture), detent: detents.count - 1, settleMs: 0)
                 return
             }
             // The hard stop at the top detent — no rubber-band. `next` is clamped, not the
@@ -210,11 +249,12 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
             let lowest = offset(forDetent: 0)
             if next > lowest, !dismissible { next = lowest + (next - lowest) / 3 }   // resistance below the lowest detent
             applyOffset(next)
+            fireDrag(.move, at: point(of: gesture))
         case .ended, .cancelled:
             let wasSheet = sheetOwnsDrag
             unpinScroll()
             activeScroll = nil
-            if wasSheet { settle(velocityY: gesture.velocity(in: host).y) }
+            if wasSheet { settle(velocityY: gesture.velocity(in: host).y, at: point(of: gesture)) }
         default:
             break
         }
@@ -222,11 +262,12 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
 
     /// The release: the nearest detent to the projected offset, or the dismissal — past the
     /// midpoint between the lowest detent and gone, or a hard downward fling at / below it.
-    func settle(velocityY: CGFloat) {
+    func settle(velocityY: CGFloat, at point: CGPoint) {
         let projected = currentOffset + 0.15 * velocityY
         let lowest = offset(forDetent: 0)
         if dismissible, projected > (lowest + hiddenOffset) / 2 || (velocityY > 1500 && currentOffset >= lowest - 0.5) {
             targetIndex = -1
+            fireDrag(.end, at: point, detent: -1, settleMs: Self.settleMs)
             animateSettle(to: hiddenOffset, velocityY: velocityY)
             fireDetent(-1)
             return
@@ -238,6 +279,7 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
             if d < bestDistance { bestDistance = d; best = i }
         }
         targetIndex = best
+        fireDrag(.end, at: point, detent: best, settleMs: abs(offset(forDetent: best) - currentOffset) < 0.5 ? 0 : Self.settleMs)
         animateSettle(to: offset(forDetent: best), velocityY: velocityY)
         if best != settledIndex {
             settledIndex = best
@@ -249,6 +291,40 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
         let distance = abs(target - currentOffset)
         let springVelocity = distance > 0 ? min(abs(velocityY) / distance, 8) : 0
         animate(to: target, damping: 0.85, velocity: springVelocity)
+    }
+
+    /// The phases of TREE_EVENT_SHEET_DRAG.
+    private enum DragPhase: Int32 { case start = 0, move = 1, end = 2 }
+    /// The length of `animate(to:)`, as the drag's end tells it.
+    private static let settleMs: Int32 = 300
+
+    /// The share of the screen the sheet shows at `offset`, in the detents' units: the top detent ×
+    /// the shown share of its box (a content-sized sheet: 1 whole, 0 gone).
+    private func position(at offset: CGFloat) -> Double {
+        let height = hiddenOffset
+        guard height > 0, let top = detents.last else { return 0 }
+        return Double(top * min(max(1 - offset / height, 0), 1))
+    }
+
+    /// The finger of the pan in the app root's space, as a touch event tells it.
+    private func point(of gesture: UIPanGestureRecognizer) -> CGPoint { gesture.location(in: UINode.appRoot ?? view.superview) }
+
+    /// The drag to the SDK's `onDragStart` track, for a sheet that listens. The end carries where
+    /// the sheet goes: the detent (-1 = it leaves), its position, the settle's ms (0 = it is
+    /// there). Posted like the detent, and before it: the track's `onEnd` comes ahead of `onDetent`.
+    private func fireDrag(_ phase: DragPhase, at p: CGPoint, detent: Int = 0, settleMs: Int32 = 0) {
+        if phase == .start { dragReported = false } else if !dragReported { return }
+        guard widget.has(TreeEvents.TREE_FLAG_SHEET_DRAG), !widget.isRemoved else { return }
+        dragReported = phase != .end
+        // a move crosses into JS only for a track that hears it (the SDK's answer to the start)
+        if phase == .move, !widget.has(TreeEvents.TREE_FLAG_SHEET_DRAG_MOVE) { return }
+        let id = widget.id
+        var args: [LeValue] = [.int(phase.rawValue), .double(position(at: currentOffset)), .double(Double(p.x)), .double(Double(p.y))]
+        if phase == .end {
+            let target = detent < 0 ? 0 : Double(detents[min(max(detent, 0), detents.count - 1)])
+            args += [.int(Int32(detent)), .double(target), .int(settleMs)]
+        }
+        JSThread.post { Core.nodeEvent(id, kind: TreeEvents.TREE_EVENT_SHEET_DRAG, args) }
     }
 
     /// Gesture settles only, posted — outside the gesture transaction.
@@ -264,8 +340,10 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
         if next < 0 { next = 0 }
         let lowest = offset(forDetent: 0)
         if next > lowest, !dismissible { next = lowest + (next - lowest) / 3 }
+        fireDrag(.start, at: .zero)
         applyOffset(next)
-        settle(velocityY: velocityY)
+        fireDrag(.move, at: .zero)
+        settle(velocityY: velocityY, at: .zero)
     }
 
     // MARK: - scroll coordination

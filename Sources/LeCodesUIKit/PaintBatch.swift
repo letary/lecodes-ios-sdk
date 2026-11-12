@@ -13,6 +13,9 @@ import UIKit
 /// handed in — never kept.
 public struct PaintRecord {
     let base: UnsafePointer<UInt32>
+    /// Every field reads as changed: the whole current record re-applied (an inline run back to a
+    /// block — its box and label never saw the fields it took as a run).
+    var allDirty = false
 
     public func word(_ w: Int) -> UInt32 { base[w] }
     public func float(_ w: Int) -> Float { Float(bitPattern: base[w]) }
@@ -20,12 +23,14 @@ public struct PaintRecord {
     public func color(_ w: Int) -> UInt32 { base[w] }
     public func bool(_ w: Int) -> Bool { float(w) >= 0.5 }
     /// The field has a value (own, inherited, or a registry default).
-    public func has(_ bit: Int) -> Bool { CuiPaint.has(base[CuiPaint.presentLo], base[CuiPaint.presentHi], bit) }
+    public func has(_ bit: Int) -> Bool { CuiPaint.has(base, CuiPaint.presentAt, bit) }
     /// The field changed since the last collect.
-    public func dirty(_ bit: Int) -> Bool { CuiPaint.has(base[CuiPaint.dirtyLo], base[CuiPaint.dirtyHi], bit) }
-    public var anyDirty: Bool { base[CuiPaint.dirtyLo] != 0 || base[CuiPaint.dirtyHi] != 0 }
+    public func dirty(_ bit: Int) -> Bool { allDirty || CuiPaint.has(base, CuiPaint.dirtyAt, bit) }
+    public var anyDirty: Bool { allDirty || (0..<CuiPaint.maskWords).contains { base[CuiPaint.dirtyAt + $0] != 0 } }
     public func string(_ w: Int) -> String { CreatorUI.string(base[w]) }
     public func gradient(_ w: Int) -> Gradient? { CreatorUI.gradient(base[w]) }
+    /// The drop shadows of the `boxShadow` word, [0] on top (paint from the last); empty = none.
+    public func shadows(_ w: Int) -> [Shadow] { CreatorUI.shadows(base[w]) }
     /// The 3x3 transform (column-major in the record) as an affine transform, nil for identity — the
     /// matrix alone; `transformBox` reads the box part the record carries beside it.
     public func transform(_ w: Int) -> CGAffineTransform? {

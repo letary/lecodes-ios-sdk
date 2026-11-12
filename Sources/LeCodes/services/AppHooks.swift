@@ -25,6 +25,13 @@
 //  launching tap twice (connectionOptions + delegate didReceive) and the handler's dedup
 //  relies on seeing the cold-start delivery before the redelivery.
 //
+//  The core's own LOCAL notifications (services/LocalNotifications.swift — the ones the app
+//  schedules on the device, their userInfo under LocalNotifications.key) are routed FIRST:
+//  in the foreground always the banner (the contract has no foreground "message" for them),
+//  the cold-start response and the taps to the engine's LocalNotifications — attached from
+//  LeCodesEngine.init, buffered the same way and drained cold start first. Everything else —
+//  every remote push — goes to the plugin's handler exactly as before.
+//
 //  Kept in the SDK deliberately: this file references only UserNotifications (no
 //  usage-description / review flag for linking it). The privacy-flagged machinery —
 //  CoreLocation, APNs registration, the le.codes backend calls — lives in the plugins.
@@ -77,7 +84,9 @@ public enum LeCodesAppHooks {
 
     public static func coldStartNotification(_ response: UNNotificationResponse) {
         onMainThread {
-            if let handler { handler.coldStart(response) } else { pendingColdStart = response }
+            if LocalNotifications.owns(response.notification) {
+                if let local { local.coldStart(response) } else { pendingLocalColdStart = response }
+            } else if let handler { handler.coldStart(response) } else { pendingColdStart = response }
         }
     }
 
@@ -101,12 +110,29 @@ public enum LeCodesAppHooks {
         }
     }
 
+    // MARK: - The core's local notifications (LeCodesEngine.init, on the main thread)
+
+    static func attachLocalNotifications(_ service: LocalNotifications) {
+        local = service
+        if let response = pendingLocalColdStart {
+            pendingLocalColdStart = nil
+            service.coldStart(response)
+        }
+        let taps = pendingLocalResponses
+        pendingLocalResponses = []
+        for response in taps { service.didReceive(response) }
+    }
+
     // MARK: - State (main-thread confined; delegate callbacks hop before touching it)
 
     private static var handler: LeCodesNotificationHandler? = nil
     private static var pendingColdStart: UNNotificationResponse? = nil
     private static var pendingResponses: [UNNotificationResponse] = []
     private static var pendingToken: Result<Data, Error>? = nil
+    /// The engine's service: weak, it goes with its engine.
+    private static weak var local: LocalNotifications? = nil
+    private static var pendingLocalColdStart: UNNotificationResponse? = nil
+    private static var pendingLocalResponses: [UNNotificationResponse] = []
 
     private static let proxy = NotificationCenterProxy()
 
@@ -115,6 +141,7 @@ public enum LeCodesAppHooks {
         func userNotificationCenter(_ center: UNUserNotificationCenter,
                                     willPresent notification: UNNotification,
                                     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+            if LocalNotifications.owns(notification) { return completionHandler([.banner, .sound, .list]) }
             onMainThread {
                 if let handler = LeCodesAppHooks.handler {
                     handler.willPresent(notification, completion: completionHandler)
@@ -128,7 +155,11 @@ public enum LeCodesAppHooks {
                                     didReceive response: UNNotificationResponse,
                                     withCompletionHandler completionHandler: @escaping () -> Void) {
             onMainThread {
-                if let handler = LeCodesAppHooks.handler {
+                if LocalNotifications.owns(response.notification) {
+                    if let local = LeCodesAppHooks.local { local.didReceive(response) }
+                    else { LeCodesAppHooks.pendingLocalResponses.append(response) }
+                    completionHandler()
+                } else if let handler = LeCodesAppHooks.handler {
                     handler.didReceive(response, completion: completionHandler)
                 } else {
                     // Buffered for the handler; the system callback cannot wait for it.

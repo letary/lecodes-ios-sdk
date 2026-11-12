@@ -26,7 +26,7 @@ final class Scene2dHost: HostScene2d {
     }
     var open2DScene: ((Int32) -> Void)? {
         { [weak self] sceneId in
-            Core.scene2dEnsureInited()   // the lazy sg_setup (init2D) before the first frame draws
+            // (the lazy sg_setup — init2D — ran in the runtime before this slot fired: a scene opens inited)
             self?.openSceneId = sceneId
             self?.engine?.rootView?.ensureScene2dView()
         }

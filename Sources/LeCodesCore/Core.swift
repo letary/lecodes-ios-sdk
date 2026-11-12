@@ -96,6 +96,16 @@ public enum Core {
     public static func viewEmit(viewId: Int32, event: String, writing write: (WireOut) -> Void) {
         lc_viewEmit(viewId, event, WireOut.builder(write))
     }
+    /// A HOST NODE instance's event (`_emitHostEvent(event, payload)` on the element of `node` — the
+    /// node id HostUI.nodeFactory handed the renderer; TREE_EVENT_NODE_EVENT); nil = no payload.
+    /// The runtime resolves the node on the JS thread.
+    public static func nodeEmit(_ node: Int, event: String, payload: LeValue? = nil) {
+        lc_nodeEmit(Core.node(node), event, payload.flatMap { LeValue.builder([$0]) })
+    }
+    /// The same with the payload WRITTEN (a plugin channel's data); nothing written = no payload.
+    public static func nodeEmit(_ node: Int, event: String, writing write: (WireOut) -> Void) {
+        lc_nodeEmit(Core.node(node), event, WireOut.builder(write))
+    }
 
     // MARK: - World control (docs/push-plan.md decision 9)
 
@@ -164,6 +174,37 @@ public enum Core {
         Int64(bitPattern: (UInt64(width.bitPattern) << 32) | UInt64(height.bitPattern))
     }
 
+    // MARK: - The device cache (docs/cache.md)
+
+    /// The modes of `fetch(url, { cache })` / an image's `cache` (creator-pkg/cache.h). The policy
+    /// itself is the host's ONE function (hosts/apple/lecodes CachedHTTP.swift); the store is the runtime's.
+    public enum CacheMode: Int32 {
+        case none = 0, forceCache = 1, fallback = 2, noStore = 3
+        /// A 200 answered in this mode is kept.
+        public var keeps: Bool { self == .forceCache || self == .fallback }
+        /// The SDK's spelling ("force-cache" / "fallback" / "no-store"); anything else is `.none`.
+        public init(_ name: String) { self = CacheMode(rawValue: lc_cacheMode(name)) ?? .none }
+    }
+    /// Where the copies go (a folder the host owns) and how many bytes ONE area may hold. Before the
+    /// bundle runs; a host that never calls it has no cache — the modes are plain requests.
+    public static func cacheConfigure(dir: String, quotaBytes: Int64) { lc_cacheConfigure(dir, quotaBytes) }
+    /// The live world's area: taken where a request STARTS, handed to the read / write of its
+    /// answer — which may land after a world swap.
+    public static func cacheArea() -> Int32 { lc_cacheArea() }
+    /// The copy kept for `url`, nil when there is none. Any thread; it reads the disk — never the
+    /// JS / main thread.
+    public static func cacheRead(area: Int32, url: String) -> Data? {
+        var size = 0
+        guard let copy = lc_cacheRead(area, url, &size) else { return nil }
+        return Data(bytesNoCopy: copy, count: size, deallocator: .free)
+    }
+    /// Keep `data` as the copy of `url`. Any thread; it writes the disk — never the JS / main thread.
+    public static func cacheWrite(area: Int32, url: String, _ data: Data) {
+        data.withUnsafeBytes { bytes in
+            lc_cacheWrite(area, url, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+        }
+    }
+
     // MARK: - The log
 
     /// Every runtime log line with its level (0 debug — console.log, 1 info, 2 warn, 3 error), on
@@ -215,7 +256,7 @@ public enum Core {
     /// kind = TreeEvents.TREE_EVENT_*; only a kind the node's flag mask declares.
     public static func nodeEvent(_ node: Int, kind: Int, _ args: [LeValue] = []) { lc_nodeEvent(Core.node(node), Int32(kind), LeValue.builder(args)) }
     public static func nodeLayout(_ node: Int, left: Float, top: Float, width: Float, height: Float) { lc_nodeLayout(Core.node(node), left, top, width, height) }
-    public static func nodeScroll(_ node: Int, scrollTop: Float) { lc_nodeScroll(Core.node(node), scrollTop) }
+    public static func nodeScroll(_ node: Int, scrollTop: Float, maxScroll: Float) { lc_nodeScroll(Core.node(node), scrollTop, maxScroll) }
     public static func touchStart(_ node: Int, pointerId: Int32, x: Float, y: Float) { lc_touchStart(Core.node(node), pointerId, x, y) }
     public static func touchMove(pointerId: Int32, x: Float, y: Float, deltaX: Float, deltaY: Float) { lc_touchMove(pointerId, x, y, deltaX, deltaY) }
     public static func touchEnd(pointerId: Int32, x: Float, y: Float, deltaX: Float, deltaY: Float) { lc_touchEnd(pointerId, x, y, deltaX, deltaY) }

@@ -77,19 +77,31 @@ public protocol HostUI: AnyObject {
     var viewVersion: ((String) -> Int32)? { get }
     /// Optional slot: nil = absent.
     var viewCall: ((Int32, String, WireIn, JSCallback, JSCallback) -> Void)? { get }
-    func layerOpen(node: Int)
+    /// Optional slot: nil = absent.
+    var nodeVersion: ((String) -> Int32)? { get }
+    /// Optional slot: nil = absent.
+    var nodeCall: ((Int, String, WireIn, JSCallback, JSCallback) -> Void)? { get }
+    func layerOpen(node: Int, surface: Bool)
     func layerClose(node: Int)
     func registerFont(url: String, fontFamily: String, weight: Int32, style: Int32, onComplete: JSCallback, onReject: JSCallback)
+    /// Optional slot: nil = absent.
+    var preloadImage: ((String, Int32, Int32, String, JSCallback, JSCallback) -> Void)? { get }
     func showToast(message: String, duration: Int32)
     func getButtonPressed(node: Int) -> Bool
     func getTextValue(node: Int) -> String
     /// Optional slot: nil = absent.
     var getBoundingRect: ((Int) -> [Float]?)? { get }
     /// Optional slot: nil = absent.
+    var debugInput: ((Int32, Float, Float, Float, Float, String) -> Bool)? { get }
+    /// Optional slot: nil = absent.
     var touchHandler: ((Int32, Bool, UInt8, Int) -> Void)? { get }
     /// Optional slot: nil = absent.
     var longPressHandler: ((Int32, Int) -> Void)? { get }
     func vlistScroll(node: Int, scrollY: Float, animated: Bool)
+    /// Optional slot: nil = absent.
+    var scrollTo: ((Int, Float, Bool) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var getScroll: ((Int) -> [Float]?)? { get }
     /// Optional slot: nil = absent.
     var pagerCommand: ((Int, String, Bool) -> Void)? { get }
     /// Optional slot: nil = absent.
@@ -105,9 +117,15 @@ public extension HostUI {
     var isViewSupported: ((String) -> Bool)? { nil }
     var viewVersion: ((String) -> Int32)? { nil }
     var viewCall: ((Int32, String, WireIn, JSCallback, JSCallback) -> Void)? { nil }
+    var nodeVersion: ((String) -> Int32)? { nil }
+    var nodeCall: ((Int, String, WireIn, JSCallback, JSCallback) -> Void)? { nil }
+    var preloadImage: ((String, Int32, Int32, String, JSCallback, JSCallback) -> Void)? { nil }
     var getBoundingRect: ((Int) -> [Float]?)? { nil }
+    var debugInput: ((Int32, Float, Float, Float, Float, String) -> Bool)? { nil }
     var touchHandler: ((Int32, Bool, UInt8, Int) -> Void)? { nil }
     var longPressHandler: ((Int32, Int) -> Void)? { nil }
+    var scrollTo: ((Int, Float, Bool) -> Void)? { nil }
+    var getScroll: ((Int) -> [Float]?)? { nil }
     var pagerCommand: ((Int, String, Bool) -> Void)? { nil }
     var pagerShowPage: ((Int, Int, Bool) -> Void)? { nil }
     var pagerDropPage: ((Int, Int) -> Void)? { nil }
@@ -139,6 +157,14 @@ public protocol HostApp: AnyObject {
     /// Optional slot: nil = absent.
     var appBuild: (() -> Int32)? { get }
     /// Optional slot: nil = absent.
+    var updateSource: (() -> String)? { get }
+    /// Optional slot: nil = absent.
+    var setUpdateSource: ((String) -> Bool)? { get }
+    /// Optional slot: nil = absent.
+    var holdSplash: (() -> Bool)? { get }
+    /// Optional slot: nil = absent.
+    var hideSplash: (() -> Void)? { get }
+    /// Optional slot: nil = absent.
     var worldChange: ((String?, Bool) -> Void)? { get }
     /// Optional slot: nil = absent.
     var exit: (() -> Void)? { get }
@@ -150,6 +176,10 @@ public extension HostApp {
     var setOrientation: ((String) -> Void)? { nil }
     var appVersion: (() -> String)? { nil }
     var appBuild: (() -> Int32)? { nil }
+    var updateSource: (() -> String)? { nil }
+    var setUpdateSource: ((String) -> Bool)? { nil }
+    var holdSplash: (() -> Bool)? { nil }
+    var hideSplash: (() -> Void)? { nil }
     var worldChange: ((String?, Bool) -> Void)? { nil }
     var exit: (() -> Void)? { nil }
 }
@@ -222,7 +252,7 @@ public protocol HostFetch: AnyObject {
     func local(path: String) -> Int32
     /// Optional slot: nil = absent.
     var dispose: ((Int32) -> Void)? { get }
-    func request(url: String, method: String, headers: [String], body: String?, form: [FetchFormEntry], onComplete: JSCallback, onReject: JSCallback, onProgress: JSCallback)
+    func request(url: String, method: String, headers: [String], body: String?, form: [FetchFormEntry], cache: String, timeoutMs: Int32, onComplete: JSCallback, onReject: JSCallback, onProgress: JSCallback)
     func buffer(id: Int32, addByte: Bool) -> [UInt8]?
     func bufferSlice(id: Int32, start: Int32, end: Int32, addByte: Bool) -> [UInt8]?
     func systemBuffer(id: Int32) -> [UInt8]?
@@ -321,6 +351,15 @@ public extension HostMedia {
     var remove: ((Int32) -> Void)? { nil }
 }
 
+/// The host's side of _creatorNotifications (sdk/src/bridges/notifications.d.ts) — optional as a whole (the host may provide none).
+public protocol HostNotifications: AnyObject {
+    func schedule(request: String, onComplete: JSCallback, onReject: JSCallback)
+    func cancel(id: String)
+    func cancelAll()
+    func pending(onComplete: JSCallback, onReject: JSCallback)
+    func launchTap() -> String?
+}
+
 /// Every table of the contract, handed to the runtime once before initJS (nil = the host has none).
 public struct HostServices {
     public var gl: HostGL?
@@ -336,7 +375,8 @@ public struct HostServices {
     public var service: HostService?
     public var input: HostInput
     public var media: HostMedia?
-    public init(gl: HostGL? = nil, scene2d: HostScene2d? = nil, ui: HostUI, canvas: HostCanvas? = nil, app: HostApp, device: HostDevice, fetch: HostFetch, files: HostFiles? = nil, storage: HostStorage, socket: HostSocket, service: HostService? = nil, input: HostInput, media: HostMedia? = nil) {
+    public var notifications: HostNotifications?
+    public init(gl: HostGL? = nil, scene2d: HostScene2d? = nil, ui: HostUI, canvas: HostCanvas? = nil, app: HostApp, device: HostDevice, fetch: HostFetch, files: HostFiles? = nil, storage: HostStorage, socket: HostSocket, service: HostService? = nil, input: HostInput, media: HostMedia? = nil, notifications: HostNotifications? = nil) {
         self.gl = gl
         self.scene2d = scene2d
         self.ui = ui
@@ -350,5 +390,6 @@ public struct HostServices {
         self.service = service
         self.input = input
         self.media = media
+        self.notifications = notifications
     }
 }

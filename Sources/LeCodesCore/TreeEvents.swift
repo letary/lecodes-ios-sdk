@@ -41,6 +41,8 @@ public enum TreeEvents {
     public static let TREE_EVENT_HOVER_END = 34   // (0; x, y, dx, dy)
     public static let TREE_EVENT_HOVER_CANCEL = 35   // (0)
     public static let TREE_EVENT_WIDGET_VISIBLE = 36   // (id; shown 1|0)
+    public static let TREE_EVENT_NODE_EVENT = 37   // (id; name, payload)  a host node's event (Core.nodeEmit)
+    public static let TREE_EVENT_SHEET_DRAG = 38   // (id; phase 0 start | 1 move | 2 end, position, x, y[, detent, target, settleMs])
     // ---- setFlags(id, mask): listeners / traits the node has -------------------------------------
     // An INTERACTIVE node starts its own $hovered / $pressed / $focused scope: the engine cascades
     // an interaction class from a toggled ancestor down to it, never into it.
@@ -63,17 +65,18 @@ public enum TreeEvents {
     public static let TREE_FLAG_VLIST_END = 1 << 16
     public static let TREE_FLAG_VLIST_START = 1 << 17
     public static let TREE_FLAG_HOVER = 1 << 18   // has an onMouseEnter listener
+    public static let TREE_FLAG_SHEET_DRAG = 1 << 19   // a bottom sheet with an onDragStart listener
+    public static let TREE_FLAG_SHEET_DRAG_MOVE = 1 << 20   // … whose drag in flight has a track with onMove (the moves are sent)
     // ---- the touchStart / longPress return value -------------------------------------------------
     public static let TREE_TRACK_CLAIM_MASK = 0xFF
     public static let TREE_TRACK_TRACKED = 1 << 8   // a track handler was registered (keep feeding the pointer)
     public static let TREE_TRACK_MOVE = 1 << 9   // … and it wants onMove
     public static let TREE_TRACK_HANDLED = 1 << 10   // longPress: a listener ran (swallow the trailing click)
-    // ---- destination kinds (= creator-pkg.h VIEW_DEST_*) ------------------------------------------
+    // ---- destination kinds (a destination is never a node: 4 was a video's until host-node-plan 7b) --
     public static let TREE_DEST_SCREEN = 0
     public static let TREE_DEST_SCENE3D = 1
     public static let TREE_DEST_SCENE2D = 2
     public static let TREE_DEST_NATIVE = 3
-    public static let TREE_DEST_VIDEO = 4
     public static let TREE_DEST_NONE = 0xFF
     // ---- owned-handle kinds (runtime/native/src/owned.h OwnedKind; the SDK's core/pins.ts freed channel) ----
     public static let OWNED_KIND_TREE = 0
@@ -85,4 +88,5 @@ public enum TreeEvents {
     public static let OWNED_KIND_MEDIA = 6
     public static let OWNED_KIND_TWEEN = 7
     public static let OWNED_KIND_CANVAS = 8
+    public static let OWNED_KIND_GL_RENDER_VIEW = 9
 }

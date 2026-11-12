@@ -31,9 +31,24 @@ open class UINode {
     /// The paint state the node's record last carried (PaintBatch): what the view draws from.
     public var paint = Paint()
     /// The view (one per node; the type's own kind, `createView`), created on first use.
-    public private(set) lazy var view: UIView = createView()
-    /// The box painter over `view`.
-    lazy var box = BoxPaint(view: view)
+    public private(set) lazy var view: UIView = makeView()
+    /// The view exists (`view` was read once): a write that only mirrors node state into it can wait
+    /// for `createView` — an inline run never gets one.
+    public private(set) var hasView = false
+    private func makeView() -> UIView {
+        hasView = true
+        return createView()
+    }
+    /// The box painter over `view`, made on first use.
+    var box: BoxPaint {
+        if let madeBox { return madeBox }
+        let b = BoxPaint(view: view)
+        madeBox = b
+        return b
+    }
+    /// The box once made — what the view's own hooks reach: they may run while the view is still
+    /// being made, and making the box there would make the view again.
+    private var madeBox: BoxPaint?
     /// The box applied last (parent-relative points), nil before the first layout.
     public private(set) var lastLayout: CGRect?
     /// The view's frame is the host's, not the node's box: a pager places its pages in tab cells
@@ -59,6 +74,21 @@ open class UINode {
 
     /// A measured leaf (text, image, input): the core asks the renderer for its size during layout.
     open var hasMeasure: Bool { false }
+    /// The text this node is an INLINE RUN of (docs/plans/rich-text-plan.md: a text or an image inside
+    /// a text — the runtime's insertNode with a text as the parent); nil for a block. A run is a record
+    /// holder: no view in the hierarchy, no box, no measure func — its paragraph measures and draws it.
+    public internal(set) weak var inlineOwner: UINodeText?
+    public var isRun: Bool { inlineOwner != nil }
+    /// The records a run took never reached a box (or a label, a view): the next paint (or placement,
+    /// or measure) as a block re-applies the whole current record.
+    var needsFullPaint = false
+    /// The node whose box this node's content sizes — itself; an inline run's paragraph (a run has
+    /// no box, no measure func: Yoga asserts on dirtying it). What FrameBatcher re-measures and walks.
+    var boxNode: UINode {
+        var n: UINode = self
+        while let o = n.inlineOwner { n = o }
+        return n
+    }
     /// The view of this node's kind.
     func createView() -> UIView { NodeView(node: self) }
     /// The yoga measure (a measured leaf): the size within the constraints; mode 0 / NaN = none.
@@ -85,6 +115,13 @@ open class UINode {
     /// value and the node's own default. Text style arrives EFFECTIVE: the core inherits, the
     /// renderer never walks up. Type-scoped props no-op on other node types.
     open func applyPaint(_ r: PaintRecord) {
+        readPaint(r)
+        box.apply(paint, dirty: r)
+    }
+
+    /// The record's box fields into `paint`, no view touched (an inline run reads its highlight and
+    /// opacity here and has no box).
+    func readPaint(_ r: PaintRecord) {
         typealias B = CuiPaint.Bit
         typealias W = CuiPaint.Word
         if r.dirty(B.backgroundColor) { paint.backgroundColor = r.has(B.backgroundColor) ? r.color(W.backgroundColor) : nil }
@@ -102,6 +139,11 @@ open class UINode {
         if r.dirty(B.borderBottomRightRadius) { paint.radius.bottomRight = CGFloat(r.float(W.borderBottomRightRadius)) }
         if r.dirty(B.borderBottomLeftRadius) { paint.radius.bottomLeft = CGFloat(r.float(W.borderBottomLeftRadius)) }
         if r.dirty(B.opacity) { paint.opacity = CGFloat(r.float(W.opacity)) }
+        if r.dirty(B.zIndex) {
+            // the one field whose change is the PARENT's: the node's place among its siblings' views
+            let z = CGFloat(r.float(W.zIndex))
+            if z != paint.zIndex { paint.zIndex = z; parent?.childRestacked(self) }
+        }
         if r.dirty(B.display) { paint.display = CuiPaint.Display(rawValue: r.word(W.display)) ?? .flex }
         if r.dirty(B.overflow) { paint.overflow = CuiPaint.Overflow(rawValue: r.word(W.overflow)) ?? .visible }
         if r.dirty(B.backgroundImage) { paint.backgroundImage = r.string(W.backgroundImage) }
@@ -122,16 +164,27 @@ open class UINode {
                                                  xIsFraction: xPercent, yIsFraction: yPercent)
         }
         if r.dirty(B.pointerEvents) { paint.pointerEvents = r.word(W.pointerEvents) != CuiPaint.PointerEvents.none.rawValue }
-        box.apply(paint, dirty: r)
+        if r.dirty(B.backdropBlur) { paint.backdropBlur = CGFloat(r.float(W.backdropBlur)) }
+        if r.dirty(B.glass) { paint.glass = CuiPaint.Glass(rawValue: r.word(W.glass)) ?? .none }
+        if r.dirty(B.boxShadow) { paint.shadows = r.has(B.boxShadow) ? r.shadows(W.boxShadow) : [] }
     }
 
     // MARK: - the lifecycle
 
     func markRemoved() { isRemoved = true }
-    /// The node was released by the runtime: drop what it holds outside the tree.
-    open func onRemoved() { box.cancelBackgroundLoad() }
+    /// The node was released by the runtime: drop what it holds outside the tree — a run leaves its
+    /// paragraph's line (the runtime frees runs before their paragraph).
+    open func onRemoved() {
+        madeBox?.cancelBackgroundLoad()
+        inlineOwner?.runReleased(self)
+    }
 
     func attached(to parent: UINodeContainer?) { self.parent = parent }
+
+    /// The box's shadow follows the view (BoxShadow.swift): a move in the tree — `reorder` for one
+    /// within the same parent, which UIKit reports to nobody — or a frame / visibility / tween
+    /// written outside BoxPaint. Nothing when the node has no shadow (or no box yet).
+    func followShadow(reorder: Bool = false) { madeBox?.followShadow(reorder: reorder) }
 
     /// The apply walk from this node (FrameBatcher, the root view's layout pass): the frame's boxes
     /// onto the views, TREE_EVENT_LAYOUT for the nodes that listen. With the batch active a subtree
@@ -186,6 +239,7 @@ open class UINode {
     /// scroll or a transition moves a node without a layout; the view sees it, the cached box does
     /// not); nil when the node is not mounted under the root or never laid out.
     func boundingRect() -> [Float]? {
+        if let owner = inlineOwner { return owner.paragraph.runBoundingRect(id) }   // a run: its fragments on the paragraph's lines
         guard lastLayout != nil, let root = UINode.appRoot, view.isDescendant(of: root) else { return nil }
         let r = view.convert(view.bounds, to: root)
         return [Float(r.origin.x), Float(r.origin.y), Float(r.width), Float(r.height)]
@@ -207,7 +261,7 @@ open class UINode {
 /// 0xRRGGBBAA; sizes logical px.
 public struct Paint {
     public struct Sides<T> { public var top: T; public var right: T; public var bottom: T; public var left: T }
-    public struct Corners { public var topLeft: CGFloat = 0, topRight: CGFloat = 0, bottomRight: CGFloat = 0, bottomLeft: CGFloat = 0 }
+    public struct Corners: Equatable { public var topLeft: CGFloat = 0, topRight: CGFloat = 0, bottomRight: CGFloat = 0, bottomLeft: CGFloat = 0 }
     public struct Origin { public var x: CGFloat = 0.5, y: CGFloat = 0.5, xIsFraction = true, yIsFraction = true }
 
     public var backgroundColor: UInt32?
@@ -218,6 +272,9 @@ public struct Paint {
     public var borderColor = Sides<UInt32>(top: 0, right: 0, bottom: 0, left: 0)
     public var radius = Corners()
     public var opacity: CGFloat = 1
+    /// The order among the siblings, of the paint and the hit-test: a higher one is later (on top),
+    /// the tree's order among equals — the order of the parent's subviews (UINodeContainer.place).
+    public var zIndex: CGFloat = 0
     public var display: CuiPaint.Display = .flex
     public var overflow: CuiPaint.Overflow = .visible
     /// nil = identity (the box part included: a transform that is only a percent translate is `.identity` here).
@@ -243,6 +300,14 @@ public struct Paint {
     public var transformBox = TransformBox()
     public var transformOrigin = Origin()
     public var pointerEvents = true
+    /// The blur radius of what lies behind the box, as the record carries it (px at the core's
+    /// density, `UINode.density`); 0 = none. Any radius draws the one `.regular` system blur (BoxPaint).
+    public var backdropBlur: CGFloat = 0
+    /// The system glass under the box (UIGlassEffect, iOS 26+); where drawn it wins over `backdropBlur`.
+    public var glass: CuiPaint.Glass = .none
+    /// The shadows (`boxShadow`), drop and inset (`Shadow.inset`) in one list, [0] on top; points
+    /// (the core's px at density 1). Empty = none.
+    public var shadows: [Shadow] = []
     public init() {}
 }
 
@@ -264,13 +329,38 @@ open class UINodeContainer: UINode {
         child.attached(to: nil)
         childRemoved(child)
     }
-    /// The child's view goes under this view, in the children's order: above the previous sibling's
-    /// view (a view may hold non-node subviews too — an attached widget — so never by index).
+    /// The child's view goes under this view, in the children's PAINT order: above the view of the
+    /// child painted before it (a view may hold non-node subviews too — an attached widget — so
+    /// never by index). The subviews' order is the paint's and the hit-test's at once.
     func childInserted(_ child: UINode) {
-        let i = children.firstIndex { $0 === child } ?? 0
-        if i > 0 { view.insertSubview(child.view, aboveSubview: children[i - 1].view) }
-        else { view.insertSubview(child.view, at: 0) }
+        place(child)
         FrameBatcher.request(self)
+    }
+    /// The child's `zIndex` moved (readPaint): its view takes its new place among the siblings'.
+    func childRestacked(_ child: UINode) {
+        guard children.contains(where: { $0 === child }) else { return }   // a run: no view of its own
+        childInserted(child)
+    }
+    private func place(_ child: UINode) {
+        if let under = paintPredecessor(of: child) { view.insertSubview(child.view, aboveSubview: under.view) }
+        else { view.insertSubview(child.view, at: 0) }
+        child.followShadow(reorder: true)   // a move within this view reports nothing
+    }
+    /// The child painted right before `child` — the paint order is the tree's, a higher `zIndex`
+    /// later: the last one with a lower zIndex, or with the same one and ahead of it in the tree.
+    /// nil = `child` is painted first.
+    private func paintPredecessor(of child: UINode) -> UINode? {
+        let z = child.paint.zIndex
+        var best: UINode?
+        var ahead = true   // the children before `child` in the tree
+        for c in children {
+            if c === child { ahead = false; continue }
+            let cz = c.paint.zIndex
+            guard cz < z || (cz == z && ahead) else { continue }
+            if let b = best, b.paint.zIndex > cz { continue }
+            best = c
+        }
+        return best
     }
     func childRemoved(_ child: UINode) {
         child.view.removeFromSuperview()

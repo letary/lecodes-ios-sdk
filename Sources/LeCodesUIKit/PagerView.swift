@@ -125,7 +125,7 @@ final class PagerView: TouchScrollView, UIScrollViewDelegate, SystemBackSwipeDel
                 // Not the page the swipe has under its finger: it sits in the swipe's page, at
                 // that page's origin, and comes home to its cell when the pop is over.
                 guard let page = pageNode(tab, pos), page.view.superview === self else { continue }
-                if page.view.placement != f { UIView.performWithoutAnimation { page.view.place(f) } }
+                if page.view.placement != f { UIView.performWithoutAnimation { page.view.place(f); page.followShadow() } }
             }
         }
     }
@@ -237,7 +237,11 @@ final class PagerView: TouchScrollView, UIScrollViewDelegate, SystemBackSwipeDel
         UIView.performWithoutAnimation { page.view.place(f) }
         page.view.isHidden = false
         if above { bringSubviewToFront(page.view) }
-        else if let lowest = shown.first(where: { $0.view.superview === self }) { insertSubview(page.view, belowSubview: lowest.view) }
+        else if let lowest = shown.first(where: { $0.view.superview === self }) {
+            insertSubview(page.view, belowSubview: lowest.view)
+            lowest.followShadow(reorder: true)   // the page went in between it and its shadow
+        }
+        page.followShadow(reorder: true)
         page.updateLayout()
         for old in shown where !leaving.contains(where: { $0 === old }) { leaving.append(old) }
         refreshPagingLock()

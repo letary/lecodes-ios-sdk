@@ -66,6 +66,12 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         node?.box.layoutSublayers()
     }
 
+    /// The box's shadow lives in the parent's layer: it goes where the view goes (BoxShadow.swift).
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        node?.followShadow()
+    }
+
     // MARK: - InputControl
 
     var textValue: String { isPickerKind ? (pickerValue ?? "") : (text ?? "") }
@@ -293,6 +299,12 @@ final class TextAreaView: UITextView, UITextViewDelegate, InputControl {
         let fit = placeholderLabel.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         placeholderLabel.place(CGRect(x: x + contentOffset.x, y: y + contentOffset.y, width: width, height: fit.height))
         placeholderLabel.isHidden = !text.isEmpty || (placeholderLabel.text ?? "").isEmpty
+    }
+
+    /// The box's shadow lives in the parent's layer: it goes where the view goes (BoxShadow.swift).
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        node?.followShadow()
     }
 
     var textValue: String { text ?? "" }

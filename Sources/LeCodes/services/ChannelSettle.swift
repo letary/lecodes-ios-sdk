@@ -8,11 +8,15 @@
 // any thread.
 import Foundation
 import LeCodesCore
+import LeCodesUIKit
 
 /// A value of the wire as the generated code reads it, and where it writes one. The names a
 /// generated file uses: it imports this module alone.
 public typealias WireIn = LeCodesCore.WireIn
 public typealias WireOut = LeCodesCore.WireOut
+/// An image a half's props carry as its wire spelling (`svg:<markup>`, `id:<bufferId>`, a url — the
+/// tab bar's icons) as a bitmap for a box: the renderer's reading of image sources.
+public typealias ImageSources = LeCodesUIKit.ImageSources
 
 /// What a channel is handed, as its halves take it.
 enum ChannelValues {

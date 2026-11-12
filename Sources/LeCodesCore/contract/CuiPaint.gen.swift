@@ -4,9 +4,10 @@
 // record's memory (little-endian, 4-byte words): word offsets, mask bits, enum codes.
 
 public enum CuiPaint {
-    public static let words = 84
-    public static let bytes = 336
-    public static let presentLo = 0, presentHi = 1, dirtyLo = 2, dirtyHi = 3
+    public static let words = 92
+    public static let bytes = 368
+    /// The masks' first words (128 bits = 4 words each; bit f in word f >> 5, bit f & 31).
+    public static let presentAt = 0, dirtyAt = 4, maskWords = 4
 
     public enum Bit {
         public static let display = 0
@@ -44,102 +45,110 @@ public enum CuiPaint {
         public static let opacity = 32
         public static let transform = 33
         public static let transformOrigin = 34
-        public static let pointerEvents = 35
-        public static let fontSize = 36
-        public static let fontWeight = 37
-        public static let fontStyle = 38
-        public static let fontFamily = 39
-        public static let lineHeight = 40
-        public static let letterSpacing = 41
-        public static let textAlign = 42
-        public static let textDecoration = 43
-        public static let lineClamp = 44
-        public static let textOverflow = 45
-        public static let textWrap = 46
-        public static let objectFit = 47
-        public static let placeholder = 48
-        public static let type = 49
-        public static let enterKey = 50
-        public static let autocapitalize = 51
-        public static let autocorrect = 52
-        public static let maxLength = 53
-        public static let keyboardShrink = 54
-        public static let keyboardDismiss = 55
-        public static let showScrollbar = 56
-        public static let overscrollMode = 57
-        public static let keyboardDismissMode = 58
-        public static let snap = 59
-        public static let sheetDetents = 60
-        public static let sheetDetent = 61
-        public static let sheetDismissible = 62
-        public static let dim = 63
+        public static let zIndex = 35
+        public static let pointerEvents = 36
+        public static let fontSize = 37
+        public static let fontWeight = 38
+        public static let fontStyle = 39
+        public static let fontFamily = 40
+        public static let lineHeight = 41
+        public static let letterSpacing = 42
+        public static let textAlign = 43
+        public static let textDecoration = 44
+        public static let lineClamp = 45
+        public static let textOverflow = 46
+        public static let textWrap = 47
+        public static let objectFit = 48
+        public static let placeholder = 49
+        public static let type = 50
+        public static let enterKey = 51
+        public static let autocapitalize = 52
+        public static let autocorrect = 53
+        public static let maxLength = 54
+        public static let keyboardShrink = 55
+        public static let keyboardDismiss = 56
+        public static let showScrollbar = 57
+        public static let overscrollMode = 58
+        public static let keyboardDismissMode = 59
+        public static let snap = 60
+        public static let sheetDetents = 61
+        public static let sheetDetent = 62
+        public static let sheetDismissible = 63
+        public static let dim = 64
+        public static let backdropBlur = 65
+        public static let glass = 66
+        public static let boxShadow = 67
     }
 
     public enum Word {
-        public static let display = 4
-        public static let overflow = 5
-        public static let scrollDirection = 6
-        public static let borderWidth = 7
-        public static let borderTopWidth = 8
-        public static let borderRightWidth = 9
-        public static let borderBottomWidth = 10
-        public static let borderLeftWidth = 11
-        public static let borderHorizontalWidth = 12
-        public static let borderVerticalWidth = 13
-        public static let borderStartWidth = 14
-        public static let borderEndWidth = 15
-        public static let color = 16
-        public static let backgroundColor = 17
-        public static let borderColor = 18
-        public static let borderTopColor = 19
-        public static let borderRightColor = 20
-        public static let borderBottomColor = 21
-        public static let borderLeftColor = 22
-        public static let placeholderColor = 23
-        public static let refreshControlColor = 24
-        public static let tintColor = 25
-        public static let rippleColor = 26
-        public static let overlayColor = 27
-        public static let backgroundImage = 28
-        public static let backgroundSize = 29
-        public static let backgroundGradient = 30
-        public static let borderRadius = 31
-        public static let borderTopLeftRadius = 32
-        public static let borderTopRightRadius = 33
-        public static let borderBottomRightRadius = 34
-        public static let borderBottomLeftRadius = 35
-        public static let opacity = 36
-        public static let transform = 37
-        public static let transformOrigin = 50
-        public static let pointerEvents = 54
-        public static let fontSize = 55
-        public static let fontWeight = 56
-        public static let fontStyle = 57
-        public static let fontFamily = 58
-        public static let lineHeight = 59
-        public static let letterSpacing = 60
-        public static let textAlign = 61
-        public static let textDecoration = 62
-        public static let lineClamp = 63
-        public static let textOverflow = 64
-        public static let textWrap = 65
-        public static let objectFit = 66
-        public static let placeholder = 67
-        public static let type = 68
-        public static let enterKey = 69
-        public static let autocapitalize = 70
-        public static let autocorrect = 71
-        public static let maxLength = 72
-        public static let keyboardShrink = 73
-        public static let keyboardDismiss = 74
-        public static let showScrollbar = 75
-        public static let overscrollMode = 76
-        public static let keyboardDismissMode = 77
-        public static let snap = 78
-        public static let sheetDetents = 79
-        public static let sheetDetent = 80
-        public static let sheetDismissible = 81
-        public static let dim = 82
+        public static let display = 8
+        public static let overflow = 9
+        public static let scrollDirection = 10
+        public static let borderWidth = 11
+        public static let borderTopWidth = 12
+        public static let borderRightWidth = 13
+        public static let borderBottomWidth = 14
+        public static let borderLeftWidth = 15
+        public static let borderHorizontalWidth = 16
+        public static let borderVerticalWidth = 17
+        public static let borderStartWidth = 18
+        public static let borderEndWidth = 19
+        public static let color = 20
+        public static let backgroundColor = 21
+        public static let borderColor = 22
+        public static let borderTopColor = 23
+        public static let borderRightColor = 24
+        public static let borderBottomColor = 25
+        public static let borderLeftColor = 26
+        public static let placeholderColor = 27
+        public static let refreshControlColor = 28
+        public static let tintColor = 29
+        public static let rippleColor = 30
+        public static let overlayColor = 31
+        public static let backgroundImage = 32
+        public static let backgroundSize = 33
+        public static let backgroundGradient = 34
+        public static let borderRadius = 35
+        public static let borderTopLeftRadius = 36
+        public static let borderTopRightRadius = 37
+        public static let borderBottomRightRadius = 38
+        public static let borderBottomLeftRadius = 39
+        public static let opacity = 40
+        public static let transform = 41
+        public static let transformOrigin = 54
+        public static let zIndex = 58
+        public static let pointerEvents = 59
+        public static let fontSize = 60
+        public static let fontWeight = 61
+        public static let fontStyle = 62
+        public static let fontFamily = 63
+        public static let lineHeight = 64
+        public static let letterSpacing = 65
+        public static let textAlign = 66
+        public static let textDecoration = 67
+        public static let lineClamp = 68
+        public static let textOverflow = 69
+        public static let textWrap = 70
+        public static let objectFit = 71
+        public static let placeholder = 72
+        public static let type = 73
+        public static let enterKey = 74
+        public static let autocapitalize = 75
+        public static let autocorrect = 76
+        public static let maxLength = 77
+        public static let keyboardShrink = 78
+        public static let keyboardDismiss = 79
+        public static let showScrollbar = 80
+        public static let overscrollMode = 81
+        public static let keyboardDismissMode = 82
+        public static let snap = 83
+        public static let sheetDetents = 84
+        public static let sheetDetent = 85
+        public static let sheetDismissible = 86
+        public static let dim = 87
+        public static let backdropBlur = 88
+        public static let glass = 89
+        public static let boxShadow = 90
     }
 
     public enum Display: UInt32 {
@@ -193,6 +202,9 @@ public enum CuiPaint {
     public enum Snap: UInt32 {
         case none = 0, start = 1, center = 2, end = 3
     }
+    public enum Glass: UInt32 {
+        case none = 0, regular = 1, clear = 2
+    }
 
     /// The registry spelling of each enum code, by field.
     public enum Names {
@@ -213,9 +225,11 @@ public enum CuiPaint {
         public static let overscrollMode = ["default", "none", "absorb"]
         public static let keyboardDismissMode = ["interactive", "scroll", "none"]
         public static let snap = ["none", "start", "center", "end"]
+        public static let glass = ["none", "regular", "clear"]
     }
 
-    public static func has(_ lo: UInt32, _ hi: UInt32, _ bit: Int) -> Bool {
-        bit < 32 ? (lo >> UInt32(bit)) & 1 == 1 : (hi >> UInt32(bit - 32)) & 1 == 1
+    /// present / dirty bit test: `at` = the mask's first word (presentAt / dirtyAt) from the record's base.
+    public static func has(_ base: UnsafePointer<UInt32>, _ at: Int, _ bit: Int) -> Bool {
+        (base[at + (bit >> 5)] >> UInt32(bit & 31)) & 1 == 1
     }
 }

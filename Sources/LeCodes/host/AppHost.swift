@@ -24,4 +24,20 @@ final class AppHost: HostApp {
     // branch on the native side; a non-numeric CFBundleVersion reads as 0.
     var appVersion: (() -> String)? { { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" } }
     var appBuild: (() -> Int32)? { { Int32((Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String).flatMap { Int($0) } ?? 0) } }
+    // app.update — the source a SHELL's updater takes newer bundles from (LeCodesUpdater). Any other
+    // app of this SDK (the viewer, a library host) never boots through the updater: no override is
+    // read there, so none is reported or stored.
+    var updateSource: (() -> String)? { { LeCodesUpdater.isShell ? (LeCodesUpdater.sourceOverride?.absoluteString ?? "") : "" } }
+    var setUpdateSource: ((String) -> Bool)? {
+        { url in
+            guard LeCodesUpdater.isShell else { return false }
+            if url.isEmpty { return LeCodesUpdater.setSourceOverride(nil) }
+            guard let parsed = URL(string: url) else { return false }
+            return LeCodesUpdater.setSourceOverride(parsed)
+        }
+    }
+    // app.splash — the launch screen a SHELL's boot holds (SplashHold of LeCodesShell); no such
+    // launch in any other app of this SDK, so nothing is held there.
+    var holdSplash: (() -> Bool)? { { LeCodesShell.splash?.hold() ?? false } }
+    var hideSplash: (() -> Void)? { { LeCodesShell.splash?.hide() } }
 }

@@ -8,6 +8,22 @@
 // no scoping is needed. The long-press answer arrives through HostUI.longPressHandler inside
 // Core.longPress, so `TouchHandlers.consumeLongPress` reads it right after the call.
 //
+// MULTITOUCH — one rule on every host (iOS, Android, desktop, web):
+//  1. Every finger on an interactive node is its own pointer: a second finger landing on the node
+//     gets its own touchStart (its own `ev.track`), its own moves, its own end / cancel, at its own
+//     point — never the first finger's (NodeView sets isMultipleTouchEnabled; UIKit hands each
+//     UITouch over separately).
+//  2. The click is the PRIMARY's only: the first finger of the node's gesture, the one that pressed
+//     the node while no other finger held it (PressTracker's `primary` — the one place that decides
+//     it). It clicks lifting inside as before; the other fingers never click, so a two-finger tap is
+//     ONE click (the browser's rule).
+//  3. The long press is the primary's only: a second finger landing cancels a hold still pending (a
+//     pinch is not a hold) and arms none of its own; a hold that already fired keeps what it tracked.
+//  4. The press (`$pressed`, isButtonPressed) holds until the last finger lifts.
+// PressTracker applies it, for a button (ButtonView: its own node) and a paragraph (TextView: the
+// inline run under the finger, docs/plans/rich-text-plan.md rule 5); a screen has no click and no
+// long press, so it only ever needs rule 1.
+//
 // WHO GETS A PAN (`ev.track({ claim })`) is decided in ONE place, TouchClaims, and asked by every
 // recognizer of the renderer and the host that could take a pan away from a listener: the scroll
 // views (the scrollable, the vlist, the pager — TouchScrollView), the sheet's pan, the host's edge
@@ -68,7 +84,7 @@ public enum TouchClaims {
         guard direction != PanDirection.none else { return false }
         return TouchHandlers.claims.contains { track in
             guard track.claim & direction != 0, let node = Nodes[track.node], !node.isRemoved else { return false }
-            return node.view.isDescendant(of: owner)
+            return node.boxNode.view.isDescendant(of: owner)   // a run's view is its paragraph's
         }
     }
 }
@@ -174,4 +190,175 @@ public protocol PointerTarget: AnyObject {
 extension UIView {
     /// The point of a touch in the app root's space (the window's when no root is set).
     func rootPoint(of touch: UITouch) -> CGPoint { touch.location(in: UINode.appRoot ?? window ?? self) }
+}
+
+/// The press of one touch target — the multitouch rule above, in ONE place: a button (ButtonView: its
+/// own node, its own box) and a paragraph (TextView: the inline run under the finger, else the
+/// paragraph). The node a gesture presses is chosen when its primary lands (`resolve`); every finger
+/// after it joins that gesture until the last one lifts. The press flips the core's onPressed layer
+/// (CreatorUI.setNodePressed: the `$pressed` cascade); the touch sequence: down → Core.touchStart (a
+/// listener may take the gesture) + the long-press timer (0.5 s, 10 pt tolerance), moves → the
+/// tracked moves, up → touchEnd and the click if the finger is still on the node (`contains`) and no
+/// long press fired, cancel → touchCancel.
+///
+/// Under a scroll view the touch arrives at once (TouchScrollView: a listener has to answer
+/// touchStart before the scroll's pan can begin), so the PRESS waits out the time UIKit used to hold
+/// the touch back for: a scroll that starts on the target cancels it before `$pressed` ever shows,
+/// and a tap shorter than the wait shows none. The scripted pointer has no scroll to wait for.
+final class PressTracker {
+    private unowned let view: UIView
+    /// The node a finger landing at a root point presses; nil = nothing there is the view's.
+    private let resolve: (CGPoint) -> UINode?
+    /// Is a root point still on the gesture's node (the click lifts inside)?
+    private let contains: (UINode, CGPoint) -> Bool
+    /// The gesture's node, chosen by its primary.
+    private(set) weak var node: UINode?
+    private var touches: [Int32: TouchPosition] = [:]
+    private var pointers: [Int32: CGPoint] = [:]   // the last root point per live pointer
+    /// The primary finger: nil while no finger holds the target, and from the moment the primary
+    /// lifts (a UITouch's id can come back for the next finger, which must not inherit the click).
+    private var primary: Int32?
+    private var didLongPress = false
+    private var longPressWork: DispatchWorkItem?
+    private var longPressStart: CGPoint = .zero
+    private var pressWork: DispatchWorkItem?
+    private(set) var isPressed = false
+    static let longPressDelay: TimeInterval = 0.5
+    static let longPressMoveTolerance: CGFloat = 10
+    /// UIScrollView's own hold of a content touch (delaysContentTouches), now the press's.
+    static let scrollPressDelay: TimeInterval = 0.15
+
+    init(view: UIView, resolve: @escaping (CGPoint) -> UINode?, contains: @escaping (UINode, CGPoint) -> Bool) {
+        self.view = view
+        self.resolve = resolve
+        self.contains = contains
+    }
+
+    private var touchNode: Int { node.map { $0.has(TreeEvents.TREE_FLAG_INTERACTIVE) ? $0.id : 0 } ?? 0 }
+    private var longPressNode: Int { node.map { $0.has(TreeEvents.TREE_FLAG_LONG_PRESS) ? $0.id : 0 } ?? 0 }
+
+    /// Holds this pointer (a down it took, not yet up or cancelled).
+    func holds(_ pointerId: Int32) -> Bool { pointers[pointerId] != nil }
+
+    /// A finger landed: false = nothing under it is this target's (no gesture to join, nothing
+    /// `resolve` names) — the caller hands the pointer on.
+    @discardableResult
+    func down(_ pointerId: Int32, at p: CGPoint, pressAfter delay: TimeInterval) -> Bool {
+        let isPrimary = pointers.isEmpty   // no other finger holds the target
+        if isPrimary { node = resolve(p) }
+        guard let node, !node.isRemoved else { return false }
+        pointers[pointerId] = p
+        _ = TouchHandlers.consumeLongPress(pointerId)   // a stale flag must not swallow this press's click
+        if isPrimary {
+            primary = pointerId
+            didLongPress = false
+            armPress(after: delay)
+        } else {
+            cancelLongPress()   // a pinch is not a hold
+        }
+        TouchPipeline.start(node: touchNode, pointerId: pointerId, at: p, touches: &touches)
+        if isPrimary { armLongPress(pointerId, at: p) }
+        return true
+    }
+
+    func move(_ pointerId: Int32, to p: CGPoint) {
+        guard let node, !node.isRemoved else { return }
+        pointers[pointerId] = p
+        if pointerId == primary, longPressWork != nil, hypot(p.x - longPressStart.x, p.y - longPressStart.y) > PressTracker.longPressMoveTolerance { cancelLongPress() }
+        TouchPipeline.move(node: touchNode, pointerId: pointerId, to: p, touches: &touches)
+    }
+
+    func up(_ pointerId: Int32, at p: CGPoint) {
+        pointers[pointerId] = nil
+        let isPrimary = pointerId == primary
+        if isPrimary { primary = nil }
+        cancelLongPress()
+        let longPressed = TouchHandlers.consumeLongPress(pointerId) || (isPrimary && didLongPress)
+        let inside = node.map { contains($0, p) } ?? false
+        let sendClick = isPrimary && !longPressed && inside && (node?.has(TreeEvents.TREE_FLAG_CLICK) ?? false)
+        TouchPipeline.end(node: touchNode, pointerId: pointerId, at: p, touches: &touches, sendClick: sendClick)
+        if pointers.isEmpty { release() }
+    }
+
+    func cancel(_ pointerId: Int32) {
+        pointers[pointerId] = nil
+        if pointerId == primary { primary = nil }
+        cancelLongPress()
+        _ = TouchHandlers.consumeLongPress(pointerId)
+        TouchPipeline.cancel(node: touchNode, pointerId: pointerId, touches: &touches)
+        if pointers.isEmpty { release() }
+    }
+
+    /// The view left the window mid-hold: nothing may fire later.
+    func viewLeftWindow() {
+        cancelLongPress()
+        pressWork?.cancel()
+        pressWork = nil
+    }
+
+    /// The press delay a UIKit touch takes here: a scroll view above may still take it.
+    var touchPressDelay: TimeInterval { isUnderLiveScroll ? PressTracker.scrollPressDelay : 0 }
+
+    // MARK: - the press
+
+    private func armPress(after delay: TimeInterval) {
+        pressWork?.cancel()
+        pressWork = nil
+        guard delay > 0, !isPressed else { setPressed(true); return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.pointers.isEmpty else { return }
+            self.pressWork = nil
+            self.setPressed(true)
+        }
+        pressWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// The last pointer left: a press still waiting never shows.
+    private func release() {
+        primary = nil
+        pressWork?.cancel()
+        pressWork = nil
+        setPressed(false)
+    }
+
+    private func setPressed(_ pressed: Bool) {
+        guard isPressed != pressed, let node, !node.isRemoved else { return }
+        isPressed = pressed
+        CreatorUI.setNodePressed(node.id, pressed)
+    }
+
+    /// A scroll view above that has somewhere to go: it may still take this touch.
+    private var isUnderLiveScroll: Bool {
+        var v = view.superview
+        while let cur = v {
+            if let scroll = cur as? UIScrollView, scroll.isScrollEnabled {
+                let overflows = scroll.contentSize.width > scroll.bounds.width + 0.5 || scroll.contentSize.height > scroll.bounds.height + 0.5
+                if overflows || scroll.alwaysBounceVertical || scroll.alwaysBounceHorizontal { return true }
+            }
+            v = cur.superview
+        }
+        return false
+    }
+
+    // MARK: - the long press
+
+    private func armLongPress(_ pointerId: Int32, at p: CGPoint) {
+        cancelLongPress()
+        guard longPressNode != 0 else { return }
+        longPressStart = p
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let node = self.node, !node.isRemoved, self.primary == pointerId, self.pointers[pointerId] != nil else { return }
+            self.longPressWork = nil
+            TouchPipeline.longPress(node: self.longPressNode, pointerId: pointerId, at: p)
+            if TouchHandlers.consumeLongPress(pointerId) { self.didLongPress = true }
+        }
+        longPressWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + PressTracker.longPressDelay, execute: work)
+    }
+
+    private func cancelLongPress() {
+        longPressWork?.cancel()
+        longPressWork = nil
+    }
 }
