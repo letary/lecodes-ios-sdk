@@ -15,6 +15,10 @@ enum Haptics {
             case "warning":   UINotificationFeedbackGenerator().notificationOccurred(.warning)
             case "error":     UINotificationFeedbackGenerator().notificationOccurred(.error)
             case "selection": UISelectionFeedbackGenerator().selectionChanged()
+            // Android's EFFECT_TICK, a short crisp tap: .rigid is the nearest generator.
+            case "tick":      UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+            // A dull, strong thump: the soft generator at its full intensity.
+            case "thud":      UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 1.0)
             default:          UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
         }

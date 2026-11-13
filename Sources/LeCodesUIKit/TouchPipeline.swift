@@ -185,11 +185,56 @@ public protocol PointerTarget: AnyObject {
     func pointerMove(_ pointerId: Int32, to rootPoint: CGPoint)
     func pointerUp(_ pointerId: Int32, at rootPoint: CGPoint)
     func pointerCancel(_ pointerId: Int32)
+    /// The view the pointer landed on left the window (HeldTouches): no up and no cancel of it
+    /// follows. The target lets the pointer go NOW and tells the runtime its gesture is cancelled
+    /// on the JS thread's next turn (JSThread.post) — this is called inside the runtime's own call.
+    func pointerLost(_ pointerId: Int32)
 }
 
 extension UIView {
     /// The point of a touch in the app root's space (the window's when no root is set).
     func rootPoint(of touch: UITouch) -> CGPoint { touch.location(in: UINode.appRoot ?? window ?? self) }
+}
+
+/// The pointers that are down, each with the view it landed on — the ONE place that ends a pointer
+/// whose view left the window. UIKit stops delivering a touch when its hit view leaves the window:
+/// neither touchesEnded nor touchesCancelled follows (measured on iOS 27, against the documented
+/// cancel). Left alone, the target holds the finger for good — `$pressed` stuck, every later finger
+/// a second one that never clicks (a button of a screen a push covered and the host dropped), a
+/// track that keeps its claim. The hit view is the target itself, or a child of it the touch came
+/// up the responder chain from (a button's text, its image) — and that child can leave alone, the
+/// target staying where it is.
+///
+/// So a target names every pointer it takes (`began`: the UITouch's view; the scripted pointer has
+/// none and lands on the target) and gives it back when it ends (`ended`); every view of the
+/// renderer reports leaving the window (NodeView, TextView, ImageView); and a pointer whose hit
+/// view went with it is handed to its target as lost (PointerTarget.pointerLost). A target keeps no
+/// leaving-the-window code of its own.
+enum HeldTouches {
+    private struct Hold {
+        weak var hit: UIView?
+        weak var owner: (UIView & PointerTarget)?
+    }
+    private static var holds: [Int32: Hold] = [:]
+
+    /// `owner` took a pointer that landed on `hit` (nil = on the owner).
+    static func began(_ pointerId: Int32, hit: UIView?, owner: UIView & PointerTarget) {
+        holds[pointerId] = Hold(hit: hit ?? owner, owner: owner)
+    }
+
+    /// The pointer ended or was cancelled.
+    static func ended(_ pointerId: Int32) { holds[pointerId] = nil }
+
+    /// `view` left the window, with everything under it.
+    static func viewLeftWindow(_ view: UIView) {
+        guard !holds.isEmpty else { return }
+        for (id, hold) in holds {
+            guard let hit = hold.hit, let owner = hold.owner else { holds[id] = nil; continue }
+            guard hit.isDescendant(of: view) else { continue }
+            holds[id] = nil
+            owner.pointerLost(id)
+        }
+    }
 }
 
 /// The press of one touch target — the multitouch rule above, in ONE place: a button (ButtonView: its
@@ -262,7 +307,7 @@ final class PressTracker {
     }
 
     func move(_ pointerId: Int32, to p: CGPoint) {
-        guard let node, !node.isRemoved else { return }
+        guard let node, !node.isRemoved, pointers[pointerId] != nil else { return }   // a finger it holds (not one it lost)
         pointers[pointerId] = p
         if pointerId == primary, longPressWork != nil, hypot(p.x - longPressStart.x, p.y - longPressStart.y) > PressTracker.longPressMoveTolerance { cancelLongPress() }
         TouchPipeline.move(node: touchNode, pointerId: pointerId, to: p, touches: &touches)
@@ -289,11 +334,27 @@ final class PressTracker {
         if pointers.isEmpty { release() }
     }
 
-    /// The view left the window mid-hold: nothing may fire later.
-    func viewLeftWindow() {
+    /// The pointer's view left the window (PointerTarget.pointerLost): it is let go now — a later
+    /// finger is the primary again, nothing fires for this one — and the runtime hears its cancel,
+    /// and the press is released, on the JS thread's next turn. The node is read now: by then it
+    /// may be gone, and the listener's track would never close.
+    func lose(_ pointerId: Int32) {
+        guard pointers[pointerId] != nil else { return }
+        pointers[pointerId] = nil
+        if pointerId == primary { primary = nil }
         cancelLongPress()
-        pressWork?.cancel()
-        pressWork = nil
+        if pointers.isEmpty {
+            pressWork?.cancel()
+            pressWork = nil
+        }
+        let target = touchNode
+        JSThread.post { [self] in   // held strongly: a view destroyed before the turn still ends its track
+            if self.pointers[pointerId] == nil {   // not a finger that landed since under a reused id
+                _ = TouchHandlers.consumeLongPress(pointerId)
+                TouchPipeline.cancel(node: target, pointerId: pointerId, touches: &self.touches)
+            }
+            if self.pointers.isEmpty { self.setPressed(false) }
+        }
     }
 
     /// The press delay a UIKit touch takes here: a scroll view above may still take it.

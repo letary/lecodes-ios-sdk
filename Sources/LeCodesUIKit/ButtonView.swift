@@ -55,16 +55,29 @@ final class ButtonView: NodeView, PointerTarget {
 
     // MARK: - the pointer (UIKit's touches and the scripted pointer both land here)
 
-    func pointerDown(_ pointerId: Int32, at p: CGPoint) { press.down(pointerId, at: p, pressAfter: 0) }
+    func pointerDown(_ pointerId: Int32, at p: CGPoint) { down(pointerId, at: p, hit: nil, pressAfter: 0) }
     func pointerMove(_ pointerId: Int32, to p: CGPoint) { press.move(pointerId, to: p) }
-    func pointerUp(_ pointerId: Int32, at p: CGPoint) { press.up(pointerId, at: p) }
-    func pointerCancel(_ pointerId: Int32) { press.cancel(pointerId) }
+    func pointerUp(_ pointerId: Int32, at p: CGPoint) {
+        HeldTouches.ended(pointerId)
+        press.up(pointerId, at: p)
+    }
+    func pointerCancel(_ pointerId: Int32) {
+        HeldTouches.ended(pointerId)
+        press.cancel(pointerId)
+    }
+    func pointerLost(_ pointerId: Int32) { press.lose(pointerId) }
+
+    /// `hit` = the view the pointer landed on (a child the touch came up from; nil = the button):
+    /// the pointer ends with it, should it leave the window (HeldTouches).
+    private func down(_ pointerId: Int32, at p: CGPoint, hit: UIView?, pressAfter delay: TimeInterval) {
+        if press.down(pointerId, at: p, pressAfter: delay) { HeldTouches.began(pointerId, hit: hit, owner: self) }
+    }
 
     // MARK: - UIKit's touches
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let delay = press.touchPressDelay
-        for t in touches { press.down(TouchPipeline.pointerId(t), at: rootPoint(of: t), pressAfter: delay) }
+        for t in touches { down(TouchPipeline.pointerId(t), at: rootPoint(of: t), hit: t.view, pressAfter: delay) }
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for t in touches { pointerMove(TouchPipeline.pointerId(t), to: rootPoint(of: t)) }
@@ -74,10 +87,5 @@ final class ButtonView: NodeView, PointerTarget {
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for t in touches { pointerCancel(TouchPipeline.pointerId(t)) }
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window == nil { press.viewLeftWindow() }   // the view can go away mid-hold
     }
 }

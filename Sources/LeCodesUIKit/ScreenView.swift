@@ -47,22 +47,40 @@ class ScreenView: NodeView, PointerTarget {
 
     private var touchNode: Int { node.map { $0.isRemoved ? 0 : $0.id } ?? 0 }
 
-    func pointerDown(_ pointerId: Int32, at p: CGPoint) {
-        guard interactive else { return }
-        TouchPipeline.start(node: touchNode, pointerId: pointerId, at: p, touches: &touches)
-    }
+    func pointerDown(_ pointerId: Int32, at p: CGPoint) { down(pointerId, at: p, hit: nil) }
     func pointerMove(_ pointerId: Int32, to p: CGPoint) {
         TouchPipeline.move(node: touchNode, pointerId: pointerId, to: p, touches: &touches)
     }
     func pointerUp(_ pointerId: Int32, at p: CGPoint) {
+        HeldTouches.ended(pointerId)
         TouchPipeline.end(node: touchNode, pointerId: pointerId, at: p, touches: &touches, sendClick: false)
     }
     func pointerCancel(_ pointerId: Int32) {
+        HeldTouches.ended(pointerId)
         TouchPipeline.cancel(node: touchNode, pointerId: pointerId, touches: &touches)
     }
 
+    /// The pointer's view left the window (the host drops a screen a push covered; a child under
+    /// the finger went away): its gesture is cancelled — a track left alive would keep its claim,
+    /// and refuse that pan to every recognizer above the screen once it is shown again. The node
+    /// is read now, the runtime hears it on the JS thread's next turn (PointerTarget.pointerLost).
+    func pointerLost(_ pointerId: Int32) {
+        guard touches.removeValue(forKey: pointerId) != nil else { return }
+        let target = touchNode
+        JSThread.post { [self] in
+            guard self.touches[pointerId] == nil else { return }   // a finger that landed since under a reused id
+            TouchPipeline.cancel(node: target, pointerId: pointerId, touches: &self.touches)
+        }
+    }
+
+    /// `hit` = the view the pointer landed on (a child the touch came up from; nil = the screen).
+    private func down(_ pointerId: Int32, at p: CGPoint, hit: UIView?) {
+        guard interactive else { return }
+        if TouchPipeline.start(node: touchNode, pointerId: pointerId, at: p, touches: &touches) { HeldTouches.began(pointerId, hit: hit, owner: self) }
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches { pointerDown(TouchPipeline.pointerId(t), at: rootPoint(of: t)) }
+        for t in touches { down(TouchPipeline.pointerId(t), at: rootPoint(of: t), hit: t.view) }
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for t in touches { pointerMove(TouchPipeline.pointerId(t), to: rootPoint(of: t)) }

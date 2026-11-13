@@ -443,7 +443,7 @@ public final class BoxPaint {
         } else if src.hasPrefix("canvas:") || src.hasPrefix("scene2d:") {
             setBackgroundImage(nil)
         } else {
-            backgroundToken = ImageLoader.image(src) { [weak self] image in
+            backgroundToken = ImageLoader.image(src, shown: { [weak self] in self?.view.isShownOnScreen ?? false }) { [weak self] image in
                 guard let self else { return }
                 self.backgroundToken = nil
                 self.setBackgroundImage(image)
@@ -746,6 +746,12 @@ open class NodeView: UIView {
     open override func didMoveToSuperview() {
         super.didMoveToSuperview()
         node?.followShadow()
+    }
+
+    /// A touch that landed in here and is held by a target above ends with the view (HeldTouches).
+    open override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { HeldTouches.viewLeftWindow(self) }
     }
 
     /// The pager hides and shows its pages itself.

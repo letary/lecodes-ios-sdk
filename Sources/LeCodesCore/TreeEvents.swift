@@ -43,6 +43,7 @@ public enum TreeEvents {
     public static let TREE_EVENT_WIDGET_VISIBLE = 36   // (id; shown 1|0)
     public static let TREE_EVENT_NODE_EVENT = 37   // (id; name, payload)  a host node's event (Core.nodeEmit)
     public static let TREE_EVENT_SHEET_DRAG = 38   // (id; phase 0 start | 1 move | 2 end, position, x, y[, detent, target, settleMs])
+    public static let TREE_EVENT_IMAGE = 39   // (id; ok 1|0, width, height)  an image's picture is there / will not be: once per src (tree-events.h)
     // ---- setFlags(id, mask): listeners / traits the node has -------------------------------------
     // An INTERACTIVE node starts its own $hovered / $pressed / $focused scope: the engine cascades
     // an interaction class from a toggled ancestor down to it, never into it.
@@ -67,6 +68,7 @@ public enum TreeEvents {
     public static let TREE_FLAG_HOVER = 1 << 18   // has an onMouseEnter listener
     public static let TREE_FLAG_SHEET_DRAG = 1 << 19   // a bottom sheet with an onDragStart listener
     public static let TREE_FLAG_SHEET_DRAG_MOVE = 1 << 20   // … whose drag in flight has a track with onMove (the moves are sent)
+    public static let TREE_FLAG_IMAGE = 1 << 21   // an image with an onLoad / onError listener (TREE_EVENT_IMAGE)
     // ---- the touchStart / longPress return value -------------------------------------------------
     public static let TREE_TRACK_CLAIM_MASK = 0xFF
     public static let TREE_TRACK_TRACKED = 1 << 8   // a track handler was registered (keep feeding the pointer)

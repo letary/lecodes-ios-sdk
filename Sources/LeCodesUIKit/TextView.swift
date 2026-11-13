@@ -92,9 +92,14 @@ final class TextView: UIView, PointerTarget {
         node?.followShadow()
     }
 
+    /// The pointers that landed on the text end with it — its own, and the ones it handed on, at
+    /// the target that took them (HeldTouches): UIKit sends no end and no cancel of them.
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { press.viewLeftWindow() }   // the view can go away mid-hold
+        guard window == nil else { return }
+        HeldTouches.viewLeftWindow(self)
+        passedTouches.removeAll()
+        passedPointers.removeAll()
     }
 
     /// The node a finger at a root point presses (UINodeText.touchTarget), nil = not the text's.
@@ -109,12 +114,16 @@ final class TextView: UIView, PointerTarget {
     // MARK: - the pointer (UIKit's touches and the scripted pointer both land here)
 
     func pointerDown(_ pointerId: Int32, at p: CGPoint) {
-        if press.down(pointerId, at: p, pressAfter: 0) { return }
+        if press.down(pointerId, at: p, pressAfter: 0) {
+            HeldTouches.began(pointerId, hit: nil, owner: self)
+            return
+        }
         var v = superview
         while let cur = v {
-            if let target = cur as? PointerTarget {
+            if let target = cur as? (UIView & PointerTarget) {
                 passedPointers[pointerId] = target
                 target.pointerDown(pointerId, at: p)
+                HeldTouches.began(pointerId, hit: self, owner: target)   // it landed on the text: it ends with it
                 return
             }
             v = cur.superview
@@ -126,11 +135,21 @@ final class TextView: UIView, PointerTarget {
     }
     func pointerUp(_ pointerId: Int32, at p: CGPoint) {
         if let target = passedPointers.removeValue(forKey: pointerId) { target.pointerUp(pointerId, at: p) }
-        else if press.holds(pointerId) { press.up(pointerId, at: p) }
+        else if press.holds(pointerId) { ownUp(pointerId, at: p) }
     }
     func pointerCancel(_ pointerId: Int32) {
         if let target = passedPointers.removeValue(forKey: pointerId) { target.pointerCancel(pointerId) }
-        else if press.holds(pointerId) { press.cancel(pointerId) }
+        else if press.holds(pointerId) { ownCancel(pointerId) }
+    }
+    func pointerLost(_ pointerId: Int32) { press.lose(pointerId) }
+
+    private func ownUp(_ pointerId: Int32, at p: CGPoint) {
+        HeldTouches.ended(pointerId)
+        press.up(pointerId, at: p)
+    }
+    private func ownCancel(_ pointerId: Int32) {
+        HeldTouches.ended(pointerId)
+        press.cancel(pointerId)
     }
 
     // MARK: - UIKit's touches
@@ -138,9 +157,14 @@ final class TextView: UIView, PointerTarget {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let delay = press.touchPressDelay
         var passed = Set<UITouch>()
-        for t in touches where !press.down(TouchPipeline.pointerId(t), at: rootPoint(of: t), pressAfter: delay) {
-            passed.insert(t)
-            passedTouches.insert(ObjectIdentifier(t))
+        for t in touches {
+            let id = TouchPipeline.pointerId(t)
+            if press.down(id, at: rootPoint(of: t), pressAfter: delay) {
+                HeldTouches.began(id, hit: t.view, owner: self)
+            } else {
+                passed.insert(t)
+                passedTouches.insert(ObjectIdentifier(t))
+            }
         }
         if !passed.isEmpty { super.touchesBegan(passed, with: event) }
     }
@@ -149,11 +173,11 @@ final class TextView: UIView, PointerTarget {
         if !passed.isEmpty { super.touchesMoved(passed, with: event) }
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let passed = split(touches, ending: true) { press.up(TouchPipeline.pointerId($0), at: rootPoint(of: $0)) }
+        let passed = split(touches, ending: true) { ownUp(TouchPipeline.pointerId($0), at: rootPoint(of: $0)) }
         if !passed.isEmpty { super.touchesEnded(passed, with: event) }
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let passed = split(touches, ending: true) { press.cancel(TouchPipeline.pointerId($0)) }
+        let passed = split(touches, ending: true) { ownCancel(TouchPipeline.pointerId($0)) }
         if !passed.isEmpty { super.touchesCancelled(passed, with: event) }
     }
 

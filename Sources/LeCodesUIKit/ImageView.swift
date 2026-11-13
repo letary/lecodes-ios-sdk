@@ -16,6 +16,11 @@
 // to that box (`ensurePixels`, from layoutSubviews). A photo from a camera is 12 MP: 48 MB of pixels
 // as it is stored, a quarter of that in a feed's row, a few hundred KB as an avatar.
 //
+// The PREVIEW (the node's "preview" prop: UIImage.preview) is a second picture, drawn in the box while
+// the node's own is not there — on its way, or failed: a subview under everything else the view
+// draws, placed by the node's objectFit alone, gone the moment `image` is set (syncPreview). It is
+// loaded by the node (UINodeImage.previewBitmap), sizes nothing and reports nothing.
+//
 // An image inside a text (an icon in a line, docs/plans/rich-text-plan.md rules 9–15) has no view:
 // InlineImage below loads its source through the same pieces (ImageSourceKind, SvgDocuments.bitmap,
 // ImageLoader) for the paragraph's label to draw.
@@ -46,6 +51,13 @@ final class ImageView: UIImageView {
     private(set) var canvasSurfaceId: Int32?
     /// The live 2D scene shown (Scene2DImages draws it under this view every frame).
     private(set) var scene2dId: Int32?
+    /// The node's objectFit as it was set: what places the preview, whatever a crop made of `contentMode`.
+    private var fit: CuiPaint.ObjectFit = .contain
+    /// The preview standing in the box (syncPreview); nil while the node's own picture is there.
+    private var previewView: UIImageView?
+
+    /// The node's picture came or went: the preview gives way to it, or stands in again.
+    override var image: UIImage? { didSet { syncPreview() } }
 
     init(node: UINodeImage) {
         self.node = node
@@ -56,7 +68,15 @@ final class ImageView: UIImageView {
     }
     @available(*, unavailable) required init?(coder: NSCoder) { nil }
 
+    /// A touch that landed on the image and is held by a target above ends with the view (HeldTouches).
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { HeldTouches.viewLeftWindow(self) }
+    }
+
     func setObjectFit(_ fit: CuiPaint.ObjectFit) {
+        self.fit = fit
+        if previewView != nil { setNeedsLayout() }
         guard sourceRect == nil else { return }   // an active crop always fills the box
         switch fit {
         case .cover: contentMode = .scaleAspectFill
@@ -96,7 +116,43 @@ final class ImageView: UIImageView {
     func setTint(_ tint: UInt32?) {
         guard svgTint != tint else { return }
         svgTint = tint
-        if svg != nil { setNeedsLayout() }
+        if svg != nil || previewView != nil { setNeedsLayout() }
+    }
+
+    /// The preview (the node's "preview" prop) stands in the box while the node's own picture is not
+    /// there to draw — a url on its way or failed, bytes no codec reads, no src — and gives way the
+    /// moment it is: `image` set (a URL's pixels, a buffer, a canvas surface), an SVG parsed (drawn at
+    /// the next layout). A live scene has no picture to wait for. It is asked for only here, with a
+    /// box (UINodeImage.previewBitmap: nothing is loaded for a picture that is already there), drawn
+    /// with the node's objectFit — never its `sourceRect`, a crop of the picture's own pixels — under
+    /// the view's corner clip, and it sizes nothing: `measure` never reads it.
+    func syncPreview() {
+        guard let node, !node.isRun else { return hidePreview() }   // a run's preview is its paragraph's to draw
+        guard image == nil, svg == nil, scene2dId == nil, canvasSurfaceId == nil, node.hasPreview else {
+            hidePreview()
+            node.dropPreview()
+            return
+        }
+        guard let bitmap = node.previewBitmap(in: bounds.size, fit: fit)?.bitmap else { previewView?.image = nil; return }
+        let v: UIImageView
+        if let previewView { v = previewView } else {
+            v = UIImageView()
+            v.clipsToBounds = true
+            v.isUserInteractionEnabled = false
+            insertSubview(v, at: 0)
+            previewView = v
+        }
+        v.frame = bounds
+        switch fit {
+        case .cover: v.contentMode = .scaleAspectFill
+        case .contain: v.contentMode = .scaleAspectFit
+        case .fill: v.contentMode = .scaleToFill
+        }
+        if v.image !== bitmap { v.image = bitmap }
+    }
+    private func hidePreview() {
+        previewView?.removeFromSuperview()
+        previewView = nil
     }
 
     /// The SVG's bitmap for the current bounds and tint: the core's draw list aspect-fitted into the
@@ -168,9 +224,11 @@ final class ImageView: UIImageView {
         decodingSample = 0
         sourceGeneration += 1
         let generation = sourceGeneration
-        loadToken = ImageLoader.load(url, cache: cache) { [weak self] loaded in
+        loadToken = ImageLoader.load(url, cache: cache, shown: { [weak self] in self?.isShownOnScreen ?? false }) { [weak self] loaded in
             guard let self, self.sourceGeneration == generation, self.node?.isRemoved == false else { return }
             self.loadToken = nil
+            // TREE_EVENT_IMAGE: the url's answer is the picture's — its own size (the header's), or none
+            self.node?.imageSettled(loaded.map { CGSize(width: $0.width, height: $0.height) })
             guard let loaded else {
                 // nothing came, or what came is no image: the node shows nothing, as before
                 self.naturalSize = nil
@@ -187,6 +245,12 @@ final class ImageView: UIImageView {
             self.ensurePixels()
         }
         previous?.cancel()
+        // With a preview, the box shows IT while the new picture is on its way — not the picture of
+        // the src the node has left.
+        if imageSample == 0, image != nil, node?.hasPreview == true {
+            image = nil
+            applySourceRectCrop()
+        }
     }
 
     /// Any other source: what a URL left behind is dropped.
@@ -245,6 +309,7 @@ final class ImageView: UIImageView {
         ensurePixels()
         renderSvgIfNeeded()
         if sourceRect != nil { applySourceRectCrop() }
+        syncPreview()   // after the two above: a picture that is here already leaves nothing to stand in for
     }
 
     /// The box's shadow lives in the parent's layer: it goes where the view goes (BoxShadow.swift).
@@ -269,6 +334,26 @@ final class ImageView: UIImageView {
         var k = min(wN / base.width, hN / base.height)
         if widthMode != 1, heightMode != 1 { k = min(k, 1) }
         return CGSize(width: base.width * k, height: base.height * k)
+    }
+}
+
+extension UIView {
+    /// Is any of the view's box in what the screen shows now: inside the viewport of every scroll
+    /// view above it (a scrollable, a pager, a list — the views that clip whatever `overflow` says)
+    /// and inside the window; under the app root where there is no window (a test's root). What
+    /// orders the images that wait to be loaded (ImageLoader). Main thread.
+    var isShownOnScreen: Bool {
+        guard window != nil || UINode.appRoot.map({ isDescendant(of: $0) }) == true else { return false }
+        var rect = bounds
+        var view: UIView = self
+        while true {
+            guard !view.isHidden, !rect.isEmpty else { return false }
+            guard let parent = view.superview else { return true }
+            // a scroll view's bounds start at its offset: the rect lands in what it shows
+            rect = view.convert(rect, to: parent)
+            if parent is UIScrollView || parent.superview == nil { rect = rect.intersection(parent.bounds) }
+            view = parent
+        }
     }
 }
 
@@ -333,12 +418,18 @@ extension SvgDocuments {
 /// line (rule 15): a canvas surface or a live scene keeps its box reserved and empty, as an image
 /// that has not arrived. `changed(sizeMoved)` tells the run's node later: the source's own size
 /// arrived (its aspect may size the box — the paragraph re-measures), or its pixels did (a redraw);
-/// an answer inside a call of this class is no change (the caller collects next). Main thread.
+/// an answer inside a call of this class is no change (the caller collects next). `settled` hears
+/// what TREE_EVENT_IMAGE reports of a source — its own size once it is known, nil when it will not
+/// be — also inside a call. The node's PREVIEW is loaded by one of these too, for a block as for a
+/// run (UINodeImage.previewBitmap), with no `settled`: a preview reports nothing. Main thread.
 final class InlineImage {
+    var settled: ((CGSize?) -> Void)?
     /// The source's own size (an svg's, a raster's, a URL's header size), nil until known: the
     /// aspect a box with one side set takes (rule 10).
     private(set) var naturalSize: CGSize?
     private let changed: (_ sizeMoved: Bool) -> Void
+    /// Is the run's paragraph on the screen now: what orders a URL that waits to be loaded (ImageLoader).
+    private let shown: () -> Bool
     private var svg: SvgDocument?
     private var rendered: (size: CGSize, tint: UInt32?, image: UIImage)?
     /// A raster buffer's image, or a URL's pixels as decoded (by `sample` halvings).
@@ -351,7 +442,10 @@ final class InlineImage {
     private var generation = 0
     private var inCall = false
 
-    init(changed: @escaping (_ sizeMoved: Bool) -> Void) { self.changed = changed }
+    init(shown: @escaping () -> Bool, changed: @escaping (_ sizeMoved: Bool) -> Void) {
+        self.shown = shown
+        self.changed = changed
+    }
 
     /// `cache`: the device cache's mode of a URL (docs/cache.md). As ImageView.load, the request
     /// waited on is let go after the new one is asked for.
@@ -374,14 +468,17 @@ final class InlineImage {
             svg = SvgDocuments.get(markup)
             if svg == nil { print("[InlineImage] SVG source did not parse (\(markup.count) chars)") }
             naturalSize = svg.map { CGSize(width: CGFloat($0.width), height: CGFloat($0.height)) }
+            settled?(naturalSize)
         case .raster(let image):
             raster = image
             naturalSize = image?.size
+            settled?(image.map { CGSize(width: $0.size.width * $0.scale, height: $0.size.height * $0.scale) })
         case .url(let url):
             let generation = generation
-            loadToken = ImageLoader.load(url, cache: cache) { [weak self] loaded in
+            loadToken = ImageLoader.load(url, cache: cache, shown: shown) { [weak self] loaded in
                 guard let self, self.generation == generation else { return }
                 self.loadToken = nil
+                self.settled?(loaded.map { CGSize(width: $0.width, height: $0.height) })
                 guard let loaded else { return }   // nothing came, or no image: the box stays empty
                 self.source = loaded
                 self.naturalSize = CGSize(width: loaded.width, height: loaded.height)
@@ -489,6 +586,14 @@ final class InlineImage {
 /// An image node is such an asker of its own load: its `cache` arrives after its `src`
 /// (UINodeImage.setProperty).
 ///
+/// Order: at most `maxActive` requests are with the host at a time; the others wait here, and a
+/// slot that frees goes to a url SHOWN NOW — one of its askers says its box is on the screen
+/// (`load`'s `shown`, asked at that moment: the screen may have scrolled since the url was asked for)
+/// — before the ones nobody sees yet, which follow in the order they were asked. Nothing is dropped:
+/// an image off the screen is still loaded (its size is its layout's), after the ones in view.
+/// URLSession orders nothing itself: over HTTP/1.1 its tasks wait in the order they were made,
+/// over HTTP/2 they all share the line.
+///
 /// Main thread: every call and every answer; the bytes are fetched by the host and the pixels
 /// decoded on a queue of this type.
 public enum ImageLoader {
@@ -537,6 +642,7 @@ public enum ImageLoader {
     private static var waiters: [String: [UUID: (Source?) -> Void]] = [:]
     /// A url's bytes on their way: one request for every asker of the url.
     fileprivate final class Request {
+        let url: String
         /// The mode the request under way was made in: the first asker's.
         var mode: String
         /// A mode an asker that joined named, which reads a copy the request's own does not.
@@ -544,9 +650,24 @@ public enum ImageLoader {
         var handle: Cancel?
         /// Which of this load's requests is under way: an answer says whose it is.
         var attempt = 0
-        init(mode: String) { self.mode = mode }
+        /// With the host (a slot taken) — and no longer: its slot is given back once.
+        var started = false
+        var ended = false
+        /// The askers' "is my box on the screen now", by token — what orders the requests that wait.
+        var shown: [UUID: () -> Bool] = [:]
+        init(url: String, mode: String) {
+            self.url = url
+            self.mode = mode
+        }
     }
+    /// Every request asked for and not settled: with the host, or waiting in `waiting`.
     private static var requests: [String: Request] = [:]
+    /// How many requests are with the host at a time. URLSession opens 4 connections per server
+    /// over HTTP/1.1 and has no limit of its own over HTTP/2: what waits past these waits HERE,
+    /// where it can be ordered.
+    static let maxActive = 6
+    private static var active = 0
+    private static var waiting: [Request] = []
     /// The urls whose copy the device cache keeps, or will when the load under way lands.
     private static var kept = Set<String>()
     private static func keeps(_ mode: String) -> Bool { Core.CacheMode(mode).keeps }
@@ -563,8 +684,10 @@ public enum ImageLoader {
 
     /// nil token = answered in the call (from the cache, or a url that is none). The completion's
     /// nil = the url failed, or its bytes are no image. `cache` is the device cache's mode ("" = none).
+    /// `shown`: is the asker's box on the screen now — asked while the request waits for a slot (see
+    /// "Order" above); none = an asker nobody sees (a preload).
     @discardableResult
-    public static func load(_ url: String, cache: String = "", _ completion: @escaping (Source?) -> Void) -> Token? {
+    public static func load(_ url: String, cache: String = "", shown: (() -> Bool)? = nil, _ completion: @escaping (Source?) -> Void) -> Token? {
         if let cached = sources.object(forKey: url as NSString) {
             if keeps(cache), kept.insert(url).inserted, cached.keepable { rendererServices?.keepCopy(url: url, data: cached.data) }
             completion(cached)
@@ -577,17 +700,42 @@ public enum ImageLoader {
                 if !keeps(running.mode) { running.later = cache }
             }
             waiters[url, default: [:]][token.id] = completion
+            if let shown { running.shown[token.id] = shown }
             token.request = running
             return token
         }
         guard URL(string: url) != nil, rendererServices != nil else { completion(nil); return nil }
         waiters[url, default: [:]][token.id] = completion
-        let request = Request(mode: cache)
+        let request = Request(url: url, mode: cache)
+        if let shown { request.shown[token.id] = shown }
         if keeps(cache) { kept.insert(url) }
         requests[url] = request
         token.request = request
-        ask(url, request)
+        if active < maxActive { start(request) } else { waiting.append(request) }
         return token
+    }
+
+    /// `request` goes to the host: a slot is taken.
+    private static func start(_ request: Request) {
+        active += 1
+        request.started = true
+        ask(request.url, request)
+    }
+
+    /// The request is over — answered, failed or cancelled, whichever is heard first: its slot is
+    /// free. Then `refill`.
+    private static func end(_ request: Request) {
+        guard request.started, !request.ended else { return }
+        request.ended = true
+        active -= 1
+    }
+
+    /// The free slots go to the requests that wait: one shown now first, else the oldest.
+    private static func refill() {
+        while active < maxActive, !waiting.isEmpty {
+            let index = waiting.firstIndex { request in request.shown.values.contains { $0() } } ?? 0
+            start(waiting.remove(at: index))
+        }
     }
 
     private static func ask(_ url: String, _ request: Request) {
@@ -612,6 +760,8 @@ public enum ImageLoader {
                     if source.keepable, !keeps(mode), kept.contains(url) { rendererServices?.keepCopy(url: url, data: source.data) }
                 }
                 requests[url] = nil
+                end(request)
+                refill()
                 let ws = waiters.removeValue(forKey: url) ?? [:]
                 for w in ws.values { w(source) }
             }
@@ -623,10 +773,14 @@ public enum ImageLoader {
         // a token outlives its request: only the request it waited on is touched
         guard let request = token.request, requests[token.url] === request, var ws = waiters[token.url] else { return }
         ws[token.id] = nil
+        request.shown[token.id] = nil
         if ws.isEmpty {
             waiters[token.url] = nil
             requests[token.url] = nil
             request.handle?.cancel()
+            end(request)
+            waiting.removeAll { $0 === request }
+            refill()
         } else {
             waiters[token.url] = ws
         }
@@ -711,12 +865,12 @@ public enum ImageLoader {
     // MARK: both steps
 
     /// A url's image with no box of its own to decode for (a background): no larger than the screen.
-    /// nil token = answered in the call.
+    /// nil token = answered in the call. `shown`: as `load`'s.
     @discardableResult
-    public static func image(_ url: String, _ completion: @escaping (UIImage?) -> Void) -> Token? {
+    public static func image(_ url: String, shown: (() -> Bool)? = nil, _ completion: @escaping (UIImage?) -> Void) -> Token? {
         let token = Token(url: url)
         var answered = false
-        token.inner = load(url) { source in
+        token.inner = load(url, shown: shown) { source in
             guard !token.isCancelled else { return }
             guard let source else { answered = true; completion(nil); return }
             decode(source, sample: sampleFor(source, boxWidth: 0, boxHeight: 0)) { image in

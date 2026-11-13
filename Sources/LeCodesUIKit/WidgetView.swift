@@ -48,6 +48,7 @@ public final class WidgetOverlayView: UIView, PointerTarget {
         downInside = false
     }
     public func pointerCancel(_ pointerId: Int32) { downInside = false }
+    public func pointerLost(_ pointerId: Int32) { downInside = false }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         for t in touches { pointerDown(TouchPipeline.pointerId(t), at: rootPoint(of: t)) }

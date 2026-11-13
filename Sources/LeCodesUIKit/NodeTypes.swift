@@ -360,6 +360,14 @@ public final class UINodeText: UINode {
 /// tint, its corner radii, its own backgroundColor under it, its opacity. The source arrives before
 /// the link (the SDK writes it when it makes the node), so the view it made then hands it over at the
 /// link (`becameRun`) and takes it back at an unlink (`becameBlock`).
+///
+/// TREE_EVENT_IMAGE (tree-events.h; the SDK's onLoad / onError): what is known of the picture of the
+/// current `src` is kept here (`imageOutcome`) and told ONCE per src to a node that listens —
+/// `imageSettled`, called by whatever resolved the source (the view, a run's InlineImage).
+///
+/// The preview (the "preview" prop): a second picture drawn in the box while the node's own is not
+/// there (`previewBitmap`) — by the view for a block (ImageView.syncPreview), by the paragraph for a
+/// run (`inlinePiece`).
 public final class UINodeImage: UINode {
     private var imageView: ImageView { view as! ImageView }
     /// The one tint (the source's own through the core's cascade): applies to SVG only.
@@ -377,6 +385,19 @@ public final class UINodeImage: UINode {
     public override func setProperty(_ prop: String, _ value: String?) {
         let cacheMoved = prop == "cache" && (value ?? "") != cacheMode
         super.setProperty(prop, value)
+        if prop == "src" {
+            // A new src: its own TREE_EVENT_IMAGE (before the source is resolved below — a picture in
+            // memory settles in that call). A `cache` change asks for the same picture again and is
+            // told nothing new.
+            imageOutcome = nil
+            imageReported = false
+            srcEpoch += 1
+        }
+        if prop == "preview" || cacheMoved {
+            // The preview is loaded in the node's cache mode, when the box next needs it (previewBitmap).
+            dropPreview()
+            previewChanged()
+        }
         if let inline {
             // A run draws its source in its box (an atlas crop: its aspect and what fills the box).
             if prop == "src" || cacheMoved { inline.setSource(content["src"] ?? "", cache: cacheMode) }
@@ -422,11 +443,96 @@ public final class UINodeImage: UINode {
         }
         v.unbindScene2d()
         switch kind {
-        case .svg(let markup): v.setSvg(markup)
-        case .raster(let image): v.setImage(image)
-        case .url(let url): v.load(url: url, cache: cacheMode)
+        case .svg(let markup):
+            v.setSvg(markup)
+            // its document's size (parsed once per markup: the document the view just took)
+            imageSettled(SvgDocuments.get(markup).map { CGSize(width: CGFloat($0.width), height: CGFloat($0.height)) })
+        case .raster(let image):
+            v.setImage(image)
+            imageSettled(image.map { CGSize(width: $0.size.width * $0.scale, height: $0.size.height * $0.scale) })
+        case .url(let url): v.load(url: url, cache: cacheMode)   // settles when the url answers (ImageView.load)
         case .none, .canvas, .scene2d: v.setImage(nil)
         }
+    }
+
+    // MARK: - TREE_EVENT_IMAGE
+
+    /// What is known of the picture of the current `src`: it is there (its own pixel size — a URL's
+    /// as its header says, before its pixels are decoded down to the box; an SVG's document size),
+    /// or it will not be (the url failed, the bytes are no picture). nil = not known yet (a url on
+    /// its way), or nothing to load: an empty src, a canvas surface, a live scene — never reported.
+    private var imageOutcome: (ok: Bool, width: Int32, height: Int32)?
+    /// The event went for this src; cleared by a src write and by the node gaining TREE_FLAG_IMAGE.
+    private var imageReported = false
+    /// Counts the src writes: an event posted for a src the node has left since is not delivered.
+    private var srcEpoch = 0
+    private var listensImage = false
+
+    /// The source was resolved: `size` = the picture's own pixels, nil = it will not be there.
+    func imageSettled(_ size: CGSize?) {
+        imageOutcome = size.map { (true, Int32($0.width.rounded()), Int32($0.height.rounded())) } ?? (false, 0, 0)
+        reportImage()
+    }
+
+    /// Once per src, only to a node that listens; posted — the outcome is often learned inside the
+    /// runtime's own write of the src (a picture in memory).
+    private func reportImage() {
+        guard !imageReported, !isRemoved, has(TreeEvents.TREE_FLAG_IMAGE), let outcome = imageOutcome else { return }
+        imageReported = true
+        let id = id, epoch = srcEpoch
+        JSThread.post { [weak self] in
+            guard let self, !self.isRemoved, self.srcEpoch == epoch else { return }
+            Core.nodeEvent(id, kind: TreeEvents.TREE_EVENT_IMAGE, [.int(outcome.ok ? 1 : 0), .int(outcome.width), .int(outcome.height)])
+        }
+    }
+
+    /// A listener that came after the picture (TREE_FLAG_IMAGE gained): the node is told again.
+    public override func flagsChanged() {
+        let listens = has(TreeEvents.TREE_FLAG_IMAGE)
+        if listens, !listensImage {
+            imageReported = false
+            reportImage()
+        }
+        listensImage = listens
+    }
+
+    // MARK: - the preview
+
+    var hasPreview: Bool { !(content["preview"] ?? "").isEmpty }
+    /// The preview's loader, made when a box first needs it and dropped when the picture is there:
+    /// the same loader and caches as a src (InlineImage), in the node's cache mode; it has no
+    /// `settled` — a preview reports nothing, and one that fails is no preview.
+    private var previewImage: InlineImage?
+
+    /// The preview for a box of `box` points: its pixels and where the whole picture lands in the box
+    /// by `fit` alone (a `sourceRect` is a crop of the src's own pixels), the node's tint on an svg.
+    /// nil = no preview, or not here yet (`previewChanged` tells when it is).
+    func previewBitmap(in box: CGSize, fit: CuiPaint.ObjectFit) -> (bitmap: UIImage, place: CGRect)? {
+        guard hasPreview, box.width > 0, box.height > 0 else { return nil }
+        let loader: InlineImage
+        if let previewImage { loader = previewImage } else {
+            loader = InlineImage(shown: { [weak self] in
+                guard let self else { return false }
+                if let paragraph = self.inlineOwner?.paragraph { return paragraph.hasView && paragraph.view.isShownOnScreen }
+                return self.hasView && self.view.isShownOnScreen
+            }) { [weak self] _ in self?.previewChanged() }
+            previewImage = loader
+            loader.setSource(content["preview"] ?? "", cache: cacheMode)
+        }
+        guard let natural = loader.naturalSize, natural.width > 0, natural.height > 0 else { return nil }
+        let place = InlineImage.place(natural, crop: nil, fit: fit, in: box)
+        guard let bitmap = loader.bitmap(for: place.size, tint: tintColor) else { return nil }
+        return (bitmap, place)
+    }
+
+    func dropPreview() {
+        previewImage?.cancel()
+        previewImage = nil
+    }
+
+    /// The preview was set, or its picture landed: a redraw of the box — never a measure.
+    private func previewChanged() {
+        if isRun { inlineOwner?.contentChanged(measure: false) } else if hasView { imageView.setNeedsLayout() }
     }
 
     /// Canvas.update() on the surface this node shows (CanvasSurfaces).
@@ -473,7 +579,11 @@ public final class UINodeImage: UINode {
     /// is still fetching is joined, not fetched again — and the view gives its source up.
     func becameRun() {
         guard inline == nil else { return }
-        let image = InlineImage { [weak self] sizeMoved in self?.inlineOwner?.contentChanged(measure: sizeMoved) }
+        let image = InlineImage(shown: { [weak self] in
+            guard let paragraph = self?.inlineOwner?.paragraph, paragraph.hasView else { return false }
+            return paragraph.view.isShownOnScreen
+        }) { [weak self] sizeMoved in self?.inlineOwner?.contentChanged(measure: sizeMoved) }
+        image.settled = { [weak self] in self?.imageSettled($0) }
         inline = image
         image.setSource(content["src"] ?? "", cache: cacheMode)
         TextNodes.add(self)   // its x-height is a face's
@@ -544,6 +654,13 @@ public final class UINodeImage: UINode {
             content = place
             bitmap = inline.bitmap(for: place.size, tint: tintColor)
         }
+        // The picture is not there to draw (on its way, or it failed): its preview stands in the box,
+        // by the objectFit alone. The box itself is the src's (inlineSize): a preview sizes nothing.
+        if bitmap != nil { dropPreview() }
+        else if let standIn = previewBitmap(in: box, fit: objectFit) {
+            content = standIn.place
+            bitmap = standIn.bitmap
+        }
         let bg = paint.backgroundColor.flatMap { $0 & 0xFF != 0 ? UIColor(rgba: $0) : nil }
         return ImagePiece(size: box, content: content, bitmap: bitmap, background: bg, opacity: opacity, radius: paint.radius)
     }
@@ -552,6 +669,7 @@ public final class UINodeImage: UINode {
         super.onRemoved()   // released as a run: out of its paragraph's line
         TextNodes.remove(self)
         inline?.cancel()
+        dropPreview()
         guard hasView else { return }
         imageView.cancelLoad()
         imageView.unbindCanvas()
