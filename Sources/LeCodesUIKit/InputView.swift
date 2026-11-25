@@ -7,10 +7,20 @@
 // the core's focused layer synchronously. `type: date | time` swaps the keyboard for a UIDatePicker
 // in the keyboard's slot (the whole focus / shrink / dismissal machinery applies unchanged): the
 // WIRE value stays canonical ("yyyy-MM-dd" / "HH:mm") while the field displays a localized string.
-// A returnless pad (number / decimal / phone / the pickers) gets a Done bar — without it the
-// keyboard could only be dismissed by tapping outside. The padding is the core's (the yoga
-// padding), never the control's. The measure: an input is one text line; a textarea follows its
-// content (the core clamps through minHeight / maxHeight, past which the view scrolls inside).
+// `value` and `type` arrive in either order — the value, a content write, usually FIRST (the type
+// comes with the frame's paint record), so it sits as plain text until its kind lands: both end in
+// presentValue, the value read under the current type (one not of the kind is empty; leaving the
+// kind shows the canonical text as is), the wheels set to it — they open on the value, on now
+// with none. A programmatic set fires no change event; a pick does. A returnless pad (number /
+// decimal / phone / the pickers) gets a Done bar — without it the keyboard could only be dismissed
+// by tapping outside. The padding is the core's content box (its padding and border), never the control's. The
+// measure: an input is one text line; a textarea follows its content (the core clamps through
+// minHeight / maxHeight, past which the view scrolls inside).
+// `colorScheme` (the look of what the system draws, Paint.colorScheme) is the keyboard's: the
+// field's `keyboardAppearance` (light / dark; system or not set = `.default`, the device's), and
+// the style of the picker and the Done bar — they sit in the keyboard's slot, in the keyboard's
+// window, where no trait of the field reaches; a change while the keyboard is up reloads it. The
+// field itself takes no style: what it draws is the app's (the colors below).
 import LeCodesCore
 import UIKit
 
@@ -39,6 +49,8 @@ protocol InputControl: UIView {
     func applyEnterKey(_ key: CuiPaint.EnterKey?)
     func applyAutocapitalize(_ value: CuiPaint.Autocapitalize)
     func applyAutocorrect(_ on: Bool)
+    /// `colorScheme`: the keyboard's appearance and the style of what shares its slot.
+    func applyColorScheme(_ style: UIUserInterfaceStyle, keyboard: UIKeyboardAppearance)
     var maxLength: Int? { get set }
     var padding: UIEdgeInsets { get set }
     func measure(width: Float, widthMode: UInt8, height: Float, heightMode: UInt8) -> CGSize
@@ -76,7 +88,7 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
 
     var textValue: String { isPickerKind ? (pickerValue ?? "") : (text ?? "") }
     func setValue(_ value: String) {
-        if isPickerKind { setCanonicalValue(value) } else { text = value }
+        if isPickerKind { setCanonicalValue(value) } else { presentValue(value) }
     }
     func setFocused(_ focused: Bool) {
         if focused { becomeFirstResponder() } else if isFirstResponder { resignFirstResponder() }
@@ -95,8 +107,12 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         attributedPlaceholder = NSAttributedString(string: text, attributes: [.foregroundColor: color ?? InputDefaults.placeholderColor])
     }
     func applyTextAlign(_ a: NSTextAlignment) { textAlignment = a }
-    /// Keyboard HINTS only — no validation happens here.
+    /// Keyboard HINTS only — no validation happens here. A change of kind with a picker kind on
+    /// either side reads the value again under the new one: the value set before its `type` arrived
+    /// included.
     func applyInputType(_ type: CuiPaint.InputType) {
+        let rereads = type != inputType && (isPickerKind || type == .date || type == .time)
+        let wire = textValue   // under the kind being left: canonical for a picker, the text otherwise
         inputType = type
         isSecureTextEntry = type == .password
         switch type {
@@ -108,6 +124,7 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         default: keyboardType = .default
         }
         updatePickerInputView()
+        if rereads { presentValue(wire) }   // after the picker exists: the wheels take the value too
         updateAccessoryBar()
         applyReturnKey()
     }
@@ -144,6 +161,15 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         spellCheckingType = on ? .yes : .no
         if isFirstResponder { reloadInputViews() }
     }
+    /// The scheme's style for the views in the keyboard's slot (the picker, the Done bar).
+    private var schemeStyle: UIUserInterfaceStyle = .unspecified
+    func applyColorScheme(_ style: UIUserInterfaceStyle, keyboard: UIKeyboardAppearance) {
+        schemeStyle = style
+        keyboardAppearance = keyboard
+        datePicker?.overrideUserInterfaceStyle = style
+        inputAccessoryView?.overrideUserInterfaceStyle = style
+        if isFirstResponder { reloadInputViews() }
+    }
 
     /// One text line: an input with no explicit height is one line box (the record's lineHeight)
     /// tall instead of collapsing to the minHeight floor; the text centres in it (UITextField's
@@ -170,6 +196,7 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.calendar = Calendar(identifier: .gregorian)
         f.dateFormat = format
+        f.isLenient = false   // a value that is not of the kind parses to nothing
         return f
     }
     private static let isoDate = formatter("yyyy-MM-dd")
@@ -182,6 +209,7 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
             let picker = datePicker ?? UIDatePicker()
             picker.datePickerMode = inputType == .date ? .date : .time
             picker.preferredDatePickerStyle = .wheels
+            picker.overrideUserInterfaceStyle = schemeStyle
             if datePicker == nil {
                 picker.addTarget(self, action: #selector(pickerValueChanged), for: .valueChanged)
                 datePicker = picker
@@ -197,23 +225,40 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         guard let picker = datePicker else { return }
         adoptPickerDate(picker.date)
     }
+    /// A pick: the canonical value, and a change event carrying it (the wheels already show it).
     private func adoptPickerDate(_ date: Date) {
-        let canonical = inputType == .date ? InputFieldView.isoDate.string(from: date) : InputFieldView.isoTime.string(from: date)
+        let canonical = canonicalString(date)
         guard canonical != pickerValue else { return }
-        pickerValue = canonical
-        text = inputType == .date ? InputFieldView.displayDate.string(from: date) : InputFieldView.displayTime.string(from: date)
+        presentValue(canonical, seedWheels: false)
         node?.dispatchChange(canonical)
     }
     private func parseCanonical(_ value: String) -> Date? {
         inputType == .date ? InputFieldView.isoDate.date(from: value) : InputFieldView.isoTime.date(from: value)
     }
-    /// A programmatic set: canonical in → localized display out; malformed values are ignored.
+    private func canonicalString(_ date: Date) -> String {
+        inputType == .date ? InputFieldView.isoDate.string(from: date) : InputFieldView.isoTime.string(from: date)
+    }
+    private func displayString(_ date: Date) -> String {
+        inputType == .date ? InputFieldView.displayDate.string(from: date) : InputFieldView.displayTime.string(from: date)
+    }
+    /// A programmatic set under a picker kind: canonical in → localized display out; "" clears back
+    /// to the placeholder, a malformed value is ignored (never a half-applied field).
     private func setCanonicalValue(_ canonical: String) {
-        if canonical.isEmpty { pickerValue = nil; text = ""; return }
-        guard let date = parseCanonical(canonical) else { return }
-        pickerValue = inputType == .date ? InputFieldView.isoDate.string(from: date) : InputFieldView.isoTime.string(from: date)
-        text = inputType == .date ? InputFieldView.displayDate.string(from: date) : InputFieldView.displayTime.string(from: date)
-        datePicker?.date = date
+        if !canonical.isEmpty, parseCanonical(canonical) == nil { return }
+        presentValue(canonical)
+    }
+    /// The ONE place the canonical value, the field's text and the wheels' date come from: `wire`
+    /// read under the CURRENT type. A picker kind keeps it canonical (re-derived from the parse)
+    /// and shows it localized — a value that is not one of this kind ("" included) is empty, the
+    /// placeholder shows; any other kind shows the wire text as is. Runs for a value (set or
+    /// picked) and for a change of kind, whichever comes last. Writing `text` is no edit: it fires
+    /// no change event.
+    private func presentValue(_ wire: String, seedWheels: Bool = true) {
+        guard isPickerKind else { pickerValue = nil; text = wire; return }
+        let date = wire.isEmpty ? nil : parseCanonical(wire)
+        pickerValue = date.map { canonicalString($0) }
+        text = date.map { displayString($0) } ?? ""
+        if seedWheels, let date { datePicker?.date = date }
     }
     // No caret / selection / paste in a field the user cannot type into.
     override func caretRect(for position: UITextPosition) -> CGRect { isPickerKind ? .zero : super.caretRect(for: position) }
@@ -228,6 +273,7 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
                 bar.items = [UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil),
                              UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(accessoryDone))]
                 bar.sizeToFit()
+                bar.overrideUserInterfaceStyle = schemeStyle
                 inputAccessoryView = bar
             }
         } else if inputAccessoryView != nil {
@@ -235,8 +281,9 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         }
         if isFirstResponder { reloadInputViews() }
     }
-    /// Done confirms the wheels even if untouched (open → Done = today); a dismissal by a tap in
-    /// dead space or a drag does not adopt — that is the cancel gesture.
+    /// Done on an empty field confirms the wheels even if untouched (open → Done = now); a value
+    /// stays as it is (the wheels opened on it). A dismissal by a tap in dead space or a drag does
+    /// not adopt — that is the cancel gesture.
     @objc private func accessoryDone() {
         if isPickerKind, pickerValue == nil, let picker = datePicker { adoptPickerDate(picker.date) }
         resignFirstResponder()
@@ -259,7 +306,8 @@ final class InputFieldView: UITextField, UITextFieldDelegate, InputControl {
         return current.length - range.length + (string as NSString).length <= maxLength
     }
     func textFieldDidBeginEditing(_ textField: UITextField) {
-        if isPickerKind, let value = pickerValue, let date = parseCanonical(value) { datePicker?.date = date }
+        // The wheels open on the value; with none, on now — not where an earlier value or kind left them.
+        if isPickerKind { datePicker?.date = pickerValue.flatMap { parseCanonical($0) } ?? Date() }
         node?.focusChanged(true)
     }
     func textFieldDidEndEditing(_ textField: UITextField) { node?.focusChanged(false) }
@@ -349,6 +397,10 @@ final class TextAreaView: UITextView, UITextViewDelegate, InputControl {
         autocorrectionType = on ? .yes : .no
         spellCheckingType = on ? .yes : .no
     }
+    func applyColorScheme(_ style: UIUserInterfaceStyle, keyboard: UIKeyboardAppearance) {
+        keyboardAppearance = keyboard
+        if isFirstResponder { reloadInputViews() }
+    }
     func applyLineHeight(_ value: CGFloat) {
         if value == lineHeight { return }
         lineHeight = value
@@ -368,8 +420,8 @@ final class TextAreaView: UITextView, UITextViewDelegate, InputControl {
         textStorage.addAttributes([.paragraphStyle: paragraph], range: NSRange(location: 0, length: textStorage.length))
     }
 
-    /// Content-driven height (auto-grow). Yoga speaks the CONTENT box, sizeThatFits the border box
-    /// (it includes textContainerInset): the inset is added for the query, stripped from the result.
+    /// Content-driven height (auto-grow). The measure speaks the CONTENT box, sizeThatFits the border
+    /// box (it includes textContainerInset): the inset is added for the query, stripped from the result.
     func measure(width: Float, widthMode: UInt8, height: Float, heightMode: UInt8) -> CGSize {
         let inset = padding
         if textContainerInset != inset { textContainerInset = inset }

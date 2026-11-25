@@ -24,10 +24,18 @@ final class HostRendererServices: RendererServices {
 
     /// Always resolves: a face that fails to load is a fallback, not an app error (iOS, Android
     /// and the desktop agree). An `id:<bufferId>` face registers synchronously, before the first
-    /// layout; a URL is fetched and swapped in when it lands.
+    /// layout — and so does a face the build carries, named by its address (the bundle a shell runs
+    /// is its update source's, which names files by url): it IS a local file, and through the
+    /// request it would arrive a moment later, the first frame seeing it or not by a race. Any
+    /// other URL is fetched and swapped in when it lands.
     func registerFont(url: String, fontFamily: String, weight: Int, style: Int, onComplete: JSCallback, onReject: JSCallback) {
         if url.hasPrefix("id:"), let id = Int32(url.dropFirst(3)) {
             if let data = Buffers.get(id) { FontManager.register(data: data, family: fontFamily, weight: weight, style: style) }
+            Core.resolve(onComplete, reject: onReject)
+            return
+        }
+        if let data = embedded(url: url) {
+            FontManager.register(data: data, family: fontFamily, weight: weight, style: style)
             Core.resolve(onComplete, reject: onReject)
             return
         }
@@ -78,6 +86,7 @@ final class HostRendererServices: RendererServices {
     // MARK: - the buffer store, fetch, media
 
     func buffer(id: Int) -> Data? { Buffers.get(Int32(id)) }
+    func embedded(url: String) -> Data? { EmbeddedAssets.name(of: url).flatMap { EmbeddedAssets.read($0) } }
 
     /// The renderer's loads are pictures: behind the app's own requests. The mode is carried out
     /// by the host's one function (CachedHTTP), so an image's copy and a fetch's are the same one.

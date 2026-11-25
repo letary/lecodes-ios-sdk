@@ -12,10 +12,10 @@ public enum FrameBatcher {
     private static var scheduled = false
 
     // The write buffers. A measured leaf is held as the NODE, never its raw id: the id can be freed
-    // between the request and the drain — the runtime frees a destroyed subtree's yoga nodes at the
-    // end of its entry point, after the commit that brought their releaseNode, still inside
-    // Core.runTick and so before this drain (docs/tree.md "The host commit") — and markNodeDirty on
-    // freed memory is a use-after-free; the node carries the isRemoved flag the drain filters on.
+    // between the request and the drain — the runtime frees a destroyed subtree's creator-ui nodes at
+    // the end of its entry point, after the commit that brought their releaseNode, still inside
+    // Core.runTick and so before this drain (docs/tree.md "The host commit") — and a freed id is
+    // never handed back to the core; the node carries the isRemoved flag the drain filters on.
     private static var nodesToUpdate: [ObjectIdentifier: UINode] = [:]
     private static var leafsToMeasure: [ObjectIdentifier: UINode] = [:]
     // The processing buffers — runTick reads them after the swap.
@@ -72,7 +72,7 @@ public enum FrameBatcher {
         // to the nodes BEFORE the layout pass. A non-empty batch counts as a mutation: the nodes'
         // setters request() themselves, so the pass below runs.
         PaintBatch.sync()
-        // A layout prop written from JS marks its yoga node dirty and stops there — unlike a paint
+        // A layout prop written from JS marks its creator-ui node dirty and stops there — unlike a paint
         // prop it reaches no renderer call, so nothing requests a frame. Ask the core once per tick.
         if CreatorUI.consumeNeedsLayout() { scheduled = true }
         guard swapBuffers() else { return }
@@ -83,7 +83,7 @@ public enum FrameBatcher {
             processingNodes.removeAll(keepingCapacity: true)
         }
         // Through `boxNode`: a text that asked as a root may be an inline run by now (the same commit
-        // linked it) — its paragraph is the one measured; dirtying the run would trip Yoga's assert.
+        // linked it) — its paragraph is the one measured; the run has no measure to drop.
         for leaf in processingLeafs.values where !leaf.isRemoved {
             let measured = leaf.boxNode
             if !measured.isRemoved { CreatorUI.markNodeDirty(measured.id) }

@@ -208,8 +208,8 @@ public final class LeCodesEngine {
             socket: socket, service: service, input: input, media: media, notifications: notifications))
         Core.initJS()
         Core.cacheConfigure(dir: LeCodesEngine.cacheDirectory, quotaBytes: cacheQuotaBytes)
-        // Without a renderer text measures 0×0 (yoga needs a function before the first layout —
-        // the engine-only host answers like the windowless server); the renderer installed its own.
+        // Without a renderer text measures 0×0 (the engine-only host answers like the windowless
+        // server); the renderer installed its own.
         if rendererServices == nil { Core.setMeasureFunc { _, _, _, _, _, _ in 0 } }
 
         rendererServices?.engine = self

@@ -281,10 +281,19 @@ public protocol HostStorage: AnyObject {
     var load: ((String) -> String?)? { get }
     /// Optional slot: nil = absent.
     var save: ((String, String) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var secureGet: ((String, String, JSCallback, JSCallback) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var secureSet: ((String, String, String, JSCallback, JSCallback) -> Void)? { get }
+    /// Optional slot: nil = absent.
+    var secureRemove: ((String, String, JSCallback, JSCallback) -> Void)? { get }
 }
 public extension HostStorage {
     var load: ((String) -> String?)? { nil }
     var save: ((String, String) -> Void)? { nil }
+    var secureGet: ((String, String, JSCallback, JSCallback) -> Void)? { nil }
+    var secureSet: ((String, String, String, JSCallback, JSCallback) -> Void)? { nil }
+    var secureRemove: ((String, String, JSCallback, JSCallback) -> Void)? { nil }
 }
 
 /// The host's side of _creatorSocket (sdk/src/bridges/socket.d.ts).

@@ -173,8 +173,8 @@ final class KeyboardLayoutController {
     }
 
     /// A root is being freed (a closed widget, a released page): the shrink lets go of it NOW —
-    /// the keyboard's hide lands a frame or two later, and re-resolving against the dead root
-    /// walks freed memory.
+    /// the keyboard's hide lands a frame or two later, and there is no root left to
+    /// resolve against by then.
     func onRootReleased(_ root: UINode) {
         if shrunkRoot === root { clearShrunkRoot() }
         if insetScrollable.map({ $0 === root || isInside($0, root) }) == true { insetScrollable = nil }
@@ -198,7 +198,7 @@ final class KeyboardLayoutController {
     /// a state of the root): 0 collapses it for the root the keyboard shrinks (the keyboard stands
     /// in for the home indicator), a negative value lets go — the root reads its own edge again.
     private func overrideRootSafeBottom(_ root: UINode, _ bottom: CGFloat) {
-        guard !root.isRemoved else { return }   // nothing left to re-resolve, and the walk would run over freed memory
+        guard !root.isRemoved else { return }   // nothing left to re-resolve
         CreatorUI.overrideRootSafeBottom(root.id, bottom: Float(bottom))
     }
 

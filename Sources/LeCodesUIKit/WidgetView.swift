@@ -71,7 +71,7 @@ public protocol SheetScrollable: UIScrollView {
 
 /// The bottom sheet — the old host's WidgetSheetBehavior, lifted: the detents, the pan gesture,
 /// the snap physics and the inner-scroll handoff of a widget carrying `sheetDetents`. Detents are
-/// ascending fractions of the host height; the widget's yoga box is the HIGHEST detent (the SDK
+/// ascending fractions of the host height; the widget's layout box is the HIGHEST detent (the SDK
 /// sets `height: max%` + `bottom: 0`) and detent d shows the top d·H by translating the view down
 /// by (max − d)·H — a pure transform, never a relayout. TREE_EVENT_DETENT fires ONLY for gesture
 /// settles (a programmatic `sheetDetent` is echoed SDK-side); -1 = dragged below the lowest detent
@@ -92,7 +92,7 @@ public final class WidgetSheetBehavior: NSObject, UIGestureRecognizerDelegate {
     private var targetIndex = 0
     /// The last GESTURE-settled index — the detent event's dedupe baseline.
     private var settledIndex = 0
-    /// The current translateY from the yoga base frame.
+    /// The current translateY from the layout's base frame.
     public private(set) var currentOffset: CGFloat = 0
     private var entrancePlayed = false
     private let pan = UIPanGestureRecognizer()

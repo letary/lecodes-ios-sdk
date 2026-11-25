@@ -56,8 +56,8 @@ public final class HostUIRenderer: HostUI {
         p.remove(c)
     }
 
-    /// The runtime frees this node (its yoga node goes when the runtime's entry point returns, after
-    /// this commit — before the frame's drain): drop the node and the map entry.
+    /// The runtime frees this node (its creator-ui node goes when the runtime's entry point returns,
+    /// after this commit — before the frame's drain): drop the node and the map entry.
     public func releaseNode(id: Int) {
         guard let node = Nodes.remove(id) else { return }
         node.markRemoved()

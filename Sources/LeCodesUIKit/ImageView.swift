@@ -318,7 +318,7 @@ final class ImageView: UIImageView {
         node?.followShadow()
     }
 
-    /// The yoga measure: the intrinsic size fitted into the constraints, never upscaled unless a
+    /// The measure: the intrinsic size fitted into the constraints, never upscaled unless a
     /// dimension is exact. 0 = no intrinsic size yet (the load lands as a re-measure).
     func measure(width: Float, widthMode: UInt8, height: Float, heightMode: UInt8) -> CGSize {
         let base: CGSize
@@ -691,6 +691,15 @@ public enum ImageLoader {
         if let cached = sources.object(forKey: url as NSString) {
             if keeps(cache), kept.insert(url).inserted, cached.keepable { rendererServices?.keepCopy(url: url, data: cached.data) }
             completion(cached)
+            return nil
+        }
+        // A picture the app's package carries (RendererServices.embedded): its bytes are a local
+        // file's, so it is here in the call — its size is known before the first layout, and no box
+        // jumps when it "arrives". Its pixels are decoded for its box like any picture's. Nothing is
+        // kept for it: the package is the copy.
+        if let data = rendererServices?.embedded(url: url), let source = read(url: url, data: data) {
+            sources.setObject(source, forKey: url as NSString, cost: source.data.count)
+            completion(source)
             return nil
         }
         let token = Token(url: url)

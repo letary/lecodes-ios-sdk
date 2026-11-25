@@ -205,7 +205,7 @@ public final class UINodeText: UINode {
 
     /// Something this text's paragraph draws moved (a run's string, record or membership, an image
     /// run's bitmap): the paragraph re-collects its leaves; a change that moves glyphs re-measures it
-    /// (the runtime dirtied its Yoga node for its own writes; a face that landed, a display flip or an
+    /// (the runtime dirtied its creator-ui node for its own writes; a face that landed, a display flip or an
     /// image's size that arrived is the host's).
     func contentChanged(measure: Bool) {
         let p = paragraph
@@ -340,10 +340,10 @@ public final class UINodeText: UINode {
         if parent != nil, needsFullPaint, let ptr = CreatorUI.paintOf(id) { applyPaint(PaintRecord(base: ptr)) }
     }
 
-    /// The padding is the core's: the label draws inside it.
+    /// The content box is the core's: the label draws inside the padding and the border (the engine
+    /// measures it there).
     override func frameApplied() {
-        let p = CreatorUI.padding(id)
-        label.inset = UIEdgeInsets(top: CGFloat(p.top), left: CGFloat(p.left), bottom: CGFloat(p.bottom), right: CGFloat(p.right))
+        label.inset = contentInsets()
     }
 
     public override func onRemoved() {
@@ -881,7 +881,7 @@ public class UINodeScrollable: UINodeContainer {
 }
 
 /// The virtualized list: the core's window over a VListView. Its children are the mounted items
-/// (the runtime's insertNode / removeNode with this node as the parent), detached yoga roots the
+/// (the runtime's insertNode / removeNode with this node as the parent), detached layout roots the
 /// core places by offset; every layout visit drives vlistUpdateLayout FIRST (it may mount /
 /// unmount and refresh the height cache), then the content height, then the items, then a
 /// pending anchored scroll.
@@ -1041,6 +1041,7 @@ public final class UINodeInput: UINode {
         if r.dirty(B.autocorrect) { c.applyAutocorrect(r.bool(W.autocorrect)) }
         if r.dirty(B.keyboardShrink) { keyboardShrink = r.bool(W.keyboardShrink) }
         if r.dirty(B.keyboardDismiss) { keyboardDismiss = r.bool(W.keyboardDismiss) }
+        if r.dirty(B.colorScheme) { c.applyColorScheme(paint.interfaceStyle, keyboard: paint.keyboardAppearance) }
         if fontChanged {
             c.applyFont(FontManager.font(family: fontFamily, weight: fontWeight, italic: italic, size: fontSize))
             FrameBatcher.request(self, measure: true)
@@ -1056,10 +1057,9 @@ public final class UINodeInput: UINode {
         control.measure(width: width, widthMode: widthMode, height: height, heightMode: heightMode)
     }
 
-    /// The padding is the core's: the control draws inside it.
+    /// The content box is the core's: the control draws inside the padding and the border.
     override func frameApplied() {
-        let p = CreatorUI.padding(id)
-        control.padding = UIEdgeInsets(top: CGFloat(p.top), left: CGFloat(p.left), bottom: CGFloat(p.bottom), right: CGFloat(p.right))
+        control.padding = contentInsets()
     }
 
     // MARK: - the events (posted: outside the editing transaction)

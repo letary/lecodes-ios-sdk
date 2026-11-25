@@ -65,6 +65,12 @@ public protocol RendererServices: AnyObject {
     // ---- the host's buffer store (`id:<n>` sources, canvas images) ----------------------------------
     /// nil when the id is unknown or evicted.
     func buffer(id: Int) -> Data?
+    /// The bytes of `url` when the APP'S PACKAGE carries that file (a shell's embedded copies,
+    /// docs/cache.md), read here and now; nil for any other url (the default below). A file the
+    /// package has is a local file whatever it is called by: an image asked by such an address
+    /// knows its size in the call, as one read by name does, and its box is right at the first
+    /// layout. Main thread.
+    func embedded(url: String) -> Data?
 
     // ---- network --------------------------------------------------------------------------------------
     /// GET `url` in the device cache's mode `cache` (docs/cache.md: "force-cache" / "fallback" /
@@ -129,4 +135,9 @@ public struct PresentedDest {
     public init(kind: Int, node: UINode?, id: Int, viewName: String?, paramsJson: String?) {
         self.kind = kind; self.node = node; self.id = id; self.viewName = viewName; self.paramsJson = paramsJson
     }
+}
+
+public extension RendererServices {
+    /// No embedded copies: every url is a request.
+    func embedded(url: String) -> Data? { nil }
 }

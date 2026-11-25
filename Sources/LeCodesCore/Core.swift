@@ -4,7 +4,7 @@
 // callback handles the host tables hand the host, the UI events by node id, registerCallback.
 // Everything runs on the JS thread (the main thread) unless a comment says "any thread".
 //
-// A node id is an Int everywhere — the runtime's node pointer, the same number HostUI.nodeFactory
+// A node id is an Int everywhere — the UI engine's node handle, the same number HostUI.nodeFactory
 // handed the renderer, the key of its view map. Callback handles are JSCallback (Int).
 import Foundation
 import CLeCodesCore

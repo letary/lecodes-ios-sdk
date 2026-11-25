@@ -2,7 +2,7 @@
 // a plugin registers a factory per node kind (`engine.registerNode("tabbar", version:) { channel in
 // … }`, which the generated `<Name>NodeGlue.register(in:_:)` wraps), and the renderer's holder
 // (renderers/uikit UINodeHost) asks for an instance when the SDK creates a node of that kind — one
-// instance per node, keyed by the node id (the runtime's node pointer, the renderer's id), made at the
+// instance per node, keyed by the node id (the UI engine's node handle, the renderer's id), made at the
 // node's first `kind` write and destroyed when the runtime releases the node. The SDK's
 // `HostNodeElement` talks to it over HostUI: `nodeVersion` (what `supported` asks) and `nodeCall`
 // (the methods, settled through ChannelSettle like a view's); the instance's events go up through

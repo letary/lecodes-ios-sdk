@@ -1,7 +1,7 @@
 // The style engine's surface for the renderer — the twin of hosts/android's CreatorUI natives
 // (creator-ui-jni.cpp) over the C face (lecodes-core.h lc_ui*): the layout reads and writes, the
 // paint-record batch a renderer pulls once per frame, the safe-area and keyboard writes, the
-// virtualized list's routing. A node is its id (an Int: the runtime's node pointer, the same number
+// virtualized list's routing. A node is its id (an Int: the UI engine's node handle, the same number
 // HostUI.nodeFactory handed the renderer). Everything on the JS thread (the main thread).
 import Foundation
 import CLeCodesCore
@@ -19,7 +19,7 @@ public enum CreatorUI {
     /// A style write landed since the last ask (cleared by the ask): the frame runs its layout pass.
     public static func consumeNeedsLayout() -> Bool { lc_uiConsumeNeedsLayout() }
     /// The node's CURRENT box {left, top, width, height} in its parent's space, the core's px — an
-    /// ungated read (yoga's one-shot hasNewLayout flag untouched), for a node the frame's layout
+    /// ungated read (the engine's one-shot hasNewLayout flag untouched), for a node the frame's layout
     /// batch did not carry.
     public static func layout(_ node: Int) -> (left: Float, top: Float, width: Float, height: Float) {
         var out: [Float] = [0, 0, 0, 0]
@@ -32,11 +32,11 @@ public enum CreatorUI {
         lc_uiGetPadding(Core.node(node), &out)
         return (out[0], out[1], out[2], out[3])
     }
-    /// Yoga permits manual dirtying of MEASURE nodes only (a leaf whose intrinsic size changed).
+    /// For a MEASURED leaf whose intrinsic size changed: the next pass asks its measure again.
     public static func markNodeDirty(_ node: Int) { lc_uiMarkNodeDirty(Core.node(node)) }
     /// The node's `width` / `height` STYLE as fixed points (the core's px = points here), nil where
     /// it is a percent, `auto` or unset — not its laid-out box. What an IMAGE RUN's box is made of
-    /// (docs/plans/rich-text-plan.md rule 10: a run has no yoga box).
+    /// (docs/plans/rich-text-plan.md rule 10: a run has no layout box).
     public static func sizeStyle(_ node: Int) -> (width: Float?, height: Float?) {
         var w: Float = 0, h: Float = 0
         let mask = lc_uiNodeSizeStyle(Core.node(node), &w, &h)

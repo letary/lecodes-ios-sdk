@@ -6,13 +6,13 @@
 //
 // Two questions, both answered WITHOUT consuming anything:
 //  - `read` — the node's current box: from the batch when the frame's pass visited the node, the
-//    live yoga box otherwise (detached vlist item roots, walks outside the batch window). The walk
+//    live layout box otherwise (detached vlist item roots, walks outside the batch window). The walk
 //    diffs it against the box it applied last time — "changed" is the renderer's comparison, not a
 //    one-shot flag someone else may have taken first, which is what makes the apply walk
 //    idempotent (a re-walk, a rebuilt view, a widget shown again all read the same answer).
-//  - `visited` — the frame's pass went through this node. Yoga's visited set is connected from each
-//    root, so a walk may prune any subtree whose node is not in it and must descend where it is.
-//    visited ≠ changed: a cache-hit sibling is collected with an identical rect.
+//  - `visited` — the batch holds this node: every changed box and the chain from each to its root,
+//    so the set is connected from each root — a walk may prune any subtree whose node is not in it
+//    and must descend where it is. visited ≠ changed: a chain's ancestor may keep its rect.
 //
 // Main thread only: loaded, drained and cleared inside FrameBatcher.runTick.
 import LeCodesCore

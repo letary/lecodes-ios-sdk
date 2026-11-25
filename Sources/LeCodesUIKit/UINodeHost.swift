@@ -17,6 +17,12 @@
 //    `visible`, the default, lets a control's press growth leave the box), and the background and
 //    the backdrop unless the instance paints them itself (`paintsSelf`, the contract's `paints:
 //    "self"` — BoxPaint.applyBackdrop leaves the box then).
+//  - The scheme (`colorScheme`, the look of what the system draws — a host node's instance IS
+//    system-drawn): the box view's `overrideUserInterfaceStyle` (light / dark; system or not set =
+//    `.unspecified`, the device's), for every kind, no contract involved — the instance's view is
+//    its subview, UIKit's trait inheritance carries it to the control inside (the tab bar). On the
+//    box, never the instance: the record may land before the `kind` write or after it, and either
+//    order converges.
 //  - The styles: every color and number field of the paint record a host node may list
 //    (NODE_STYLES of tools/cli/src/plugin/contract.ts, below — `backgroundColor` and
 //    `backdropBlur` only for `paintsSelf`) is forwarded when the record marks it dirty, resolved by
@@ -27,8 +33,8 @@
 //    flag (the contract's `measure: true`) and calls `measure` for it only; the holder asks the
 //    instance (HostNodeContent.measure, points; mode 0 / NaN = unconstrained, 2 = at most). The
 //    instance's `invalidateSize()` re-measures the node before the next frame (FrameBatcher, the
-//    text node's path) — once the runtime has asked the node's size: Yoga asserts on dirtying a
-//    node without a measure func, and before the first ask the first layout measures anyway.
+//    text node's path) — once the runtime has asked the node's size: only a node with a measure
+//    func has an answer to drop, and before the first ask the first layout measures anyway.
 //  - The events go up from the instance itself (the host's channel → Core.nodeEmit), the methods
 //    come down through HostUI.nodeCall to the registry: neither passes the holder.
 //  - Released (onRemoved): the registry destroys the instance.
@@ -77,6 +83,7 @@ public final class UINodeHost: UINode {
 
     public override func applyPaint(_ r: PaintRecord) {
         super.applyPaint(r)
+        if r.dirty(B.colorScheme) { view.overrideUserInterfaceStyle = paint.interfaceStyle }
         guard let instance else { return }
         for s in UINodeHost.colorStyles where r.dirty(s.bit) && (!s.selfOnly || instance.paintsSelf) {
             instance.setStyle(s.name, color: r.has(s.bit) ? UIColor(rgba: r.color(s.word)) : nil)
@@ -147,7 +154,7 @@ public final class UINodeHost: UINode {
 }
 
 /// The node's box: the instance's view inside at the box's bounds, the box paint (BoxPaint) on this
-/// view, under it.
+/// view, under it; the node's `colorScheme` as this view's style, inherited by the instance's.
 final class HostNodeBoxView: NodeView {
     /// The instance's view.
     private(set) weak var content: UIView?

@@ -14,7 +14,7 @@ import LeCodesCore
 import UIKit
 
 open class UINode {
-    /// The node id: the runtime's node pointer, the key of Nodes.
+    /// The node id: the UI engine's node handle, the key of Nodes.
     public let id: Int
     /// The wire type ("screen", "column", "text", …).
     public let type: String
@@ -23,7 +23,7 @@ open class UINode {
     /// reports an event kind the mask declares.
     public var flags: UInt32 = 0 { didSet { if flags != oldValue { flagsChanged() } } }
     public func has(_ flag: Int) -> Bool { (flags & UInt32(flag)) != 0 }
-    /// releaseNode ran: the id is dead, its yoga node freed — never hand it to the core again.
+    /// releaseNode ran: the id is dead, its creator-ui node freed — never hand it to the core again.
     public private(set) var isRemoved = false
     /// The content properties as the runtime forwarded them ("text", "src", "value", "placeholder",
     /// "name", …); a nil write clears.
@@ -83,7 +83,7 @@ open class UINode {
     /// or measure) as a block re-applies the whole current record.
     var needsFullPaint = false
     /// The node whose box this node's content sizes — itself; an inline run's paragraph (a run has
-    /// no box, no measure func: Yoga asserts on dirtying it). What FrameBatcher re-measures and walks.
+    /// no box, no measure func: its paragraph measures it). What FrameBatcher re-measures and walks.
     var boxNode: UINode {
         var n: UINode = self
         while let o = n.inlineOwner { n = o }
@@ -91,10 +91,18 @@ open class UINode {
     }
     /// The view of this node's kind.
     func createView() -> UIView { NodeView(node: self) }
-    /// The yoga measure (a measured leaf): the size within the constraints; mode 0 / NaN = none.
+    /// The measure (a measured leaf): the size within the constraints; mode 0 / NaN = none.
     func measure(width: Float, widthMode: UInt8, height: Float, heightMode: UInt8) -> CGSize { .zero }
-    /// A frame landed on the view (the text node reads its padding here).
+    /// A frame landed on the view (the text node reads its content box here).
     func frameApplied() {}
+    /// The content box's insets: the core's padding and the record's border widths (the layout's) —
+    /// where the engine measured the node's content.
+    func contentInsets() -> UIEdgeInsets {
+        let p = CreatorUI.padding(id)
+        let b = paint.borderWidth
+        return UIEdgeInsets(top: CGFloat(p.top) + b.top, left: CGFloat(p.left) + b.left,
+                            bottom: CGFloat(p.bottom) + b.bottom, right: CGFloat(p.right) + b.right)
+    }
     /// The apply walk visited the node, changed or not (the sheet re-composes its offset here).
     func layoutVisited() {}
     /// The walk finished the node's children (a scrollable reads its content size, a vlist places
@@ -125,7 +133,7 @@ open class UINode {
         typealias B = CuiPaint.Bit
         typealias W = CuiPaint.Word
         if r.dirty(B.backgroundColor) { paint.backgroundColor = r.has(B.backgroundColor) ? r.color(W.backgroundColor) : nil }
-        // borders: the core fans borderWidth / borderColor out into the four sides (paint.cpp)
+        // borders: the record's four sides (the widths the layout resolved, borderColor fanned out)
         if r.dirty(B.borderTopWidth) { paint.borderWidth.top = CGFloat(r.float(W.borderTopWidth)) }
         if r.dirty(B.borderRightWidth) { paint.borderWidth.right = CGFloat(r.float(W.borderRightWidth)) }
         if r.dirty(B.borderBottomWidth) { paint.borderWidth.bottom = CGFloat(r.float(W.borderBottomWidth)) }
@@ -167,6 +175,8 @@ open class UINode {
         if r.dirty(B.backdropBlur) { paint.backdropBlur = CGFloat(r.float(W.backdropBlur)) }
         if r.dirty(B.glass) { paint.glass = CuiPaint.Glass(rawValue: r.word(W.glass)) ?? .none }
         if r.dirty(B.boxShadow) { paint.shadows = r.has(B.boxShadow) ? r.shadows(W.boxShadow) : [] }
+        // presence first: an absent field's word is 0, which is also `light`'s code
+        if r.dirty(B.colorScheme) { paint.colorScheme = r.has(B.colorScheme) ? CuiPaint.ColorScheme(rawValue: r.word(W.colorScheme)) : nil }
     }
 
     // MARK: - the lifecycle
@@ -196,7 +206,7 @@ open class UINode {
         guard !isRemoved else { return }
         if paint.display == .none { return }   // out of the layout (and hidden): nothing to apply below
         let r = LayoutBatch.read(id)
-        // Yoga's pre-layout NaN: the node has not been through a layout pass yet — keep the last box.
+        // The pre-layout NaN: the node has not been through a layout pass yet — keep the last box.
         guard r.origin.x.isFinite, r.origin.y.isFinite, r.width.isFinite, r.height.isFinite else { return }
         let changed = lastLayout != r
         if changed {
@@ -218,7 +228,7 @@ open class UINode {
     }
 
     /// The box lands on the view — through the vlist for one of its rows: a row sits in a detached
-    /// item root, its Yoga box is relative to that root and the root's y is the list's offset.
+    /// item root, its layout box is relative to that root and the root's y is the list's offset.
     /// Without this, any later update of a row (an avatar that loaded, a style write) re-applied
     /// the box against 0 and an inverted chat's message jumped to the top — whenever that update
     /// landed after the placement.
@@ -308,7 +318,33 @@ public struct Paint {
     /// The shadows (`boxShadow`), drop and inset (`Shadow.inset`) in one list, [0] on top; points
     /// (the core's px at density 1). Empty = none.
     public var shadows: [Shadow] = []
+    /// The light / dark look of what the SYSTEM draws for the node (`colorScheme`,
+    /// docs/plans/backdrop-plan.md), EFFECTIVE: the core inherits it and takes the theme's, the
+    /// renderer never walks up. nil = not set — the device's, as before. Read only where something
+    /// system-drawn lives (the glass, a host node's box, an input's keyboard), never onto a node's
+    /// own view: what the app draws has its own colors.
+    public var colorScheme: CuiPaint.ColorScheme?
     public init() {}
+}
+
+extension Paint {
+    /// `colorScheme` as a view's style: light / dark force the look; `system` and not set are
+    /// `.unspecified` — the device's appearance (no window, no node view above carries a style).
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch colorScheme {
+        case .light?: return .light
+        case .dark?: return .dark
+        case .system?, nil: return .unspecified
+        }
+    }
+    /// …as a keyboard's: `.default` follows the device.
+    var keyboardAppearance: UIKeyboardAppearance {
+        switch colorScheme {
+        case .light?: return .light
+        case .dark?: return .dark
+        case .system?, nil: return .default
+        }
+    }
 }
 
 /// A container: its children in tree order (the runtime's insert / remove, mirrored here so a view

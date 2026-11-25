@@ -1,4 +1,4 @@
-// The renderer's view map: one UINode per node id (the runtime's node pointer, the Int every HostUI
+// The renderer's view map: one UINode per node id (the UI engine's node handle, the Int every HostUI
 // slot carries). The runtime owns the tree; this is the renderer's side of it — created in
 // HostUI.nodeFactory, dropped in releaseNode. Main thread only (the JS thread on this host).
 import Foundation

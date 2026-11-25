@@ -78,6 +78,7 @@ public enum CuiPaint {
         public static let backdropBlur = 65
         public static let glass = 66
         public static let boxShadow = 67
+        public static let colorScheme = 68
     }
 
     public enum Word {
@@ -149,6 +150,7 @@ public enum CuiPaint {
         public static let backdropBlur = 88
         public static let glass = 89
         public static let boxShadow = 90
+        public static let colorScheme = 91
     }
 
     public enum Display: UInt32 {
@@ -205,6 +207,9 @@ public enum CuiPaint {
     public enum Glass: UInt32 {
         case none = 0, regular = 1, clear = 2
     }
+    public enum ColorScheme: UInt32 {
+        case light = 0, dark = 1, system = 2
+    }
 
     /// The registry spelling of each enum code, by field.
     public enum Names {
@@ -226,6 +231,7 @@ public enum CuiPaint {
         public static let keyboardDismissMode = ["interactive", "scroll", "none"]
         public static let snap = ["none", "start", "center", "end"]
         public static let glass = ["none", "regular", "clear"]
+        public static let colorScheme = ["light", "dark", "system"]
     }
 
     /// present / dirty bit test: `at` = the mask's first word (presentAt / dirtyAt) from the record's base.

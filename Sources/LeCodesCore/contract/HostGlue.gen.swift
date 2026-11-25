@@ -234,6 +234,9 @@ enum HostGlue {
         c.initialize(to: CLeCodesCore.HostStorage())
         if t.load != nil { c.pointee.load = { a0 in return HostGlue.cString(HostGlue.t_storage!.load!(HostGlue.string(a0))) } }
         if t.save != nil { c.pointee.save = { a0, a1 in HostGlue.t_storage!.save!(HostGlue.string(a0), HostGlue.string(a1)) } }
+        if t.secureGet != nil { c.pointee.secureGet = { a0, a1, a2, a3 in HostGlue.t_storage!.secureGet!(HostGlue.string(a0), HostGlue.string(a1), a2, a3) } }
+        if t.secureSet != nil { c.pointee.secureSet = { a0, a1, a2, a3, a4 in HostGlue.t_storage!.secureSet!(HostGlue.string(a0), HostGlue.string(a1), HostGlue.string(a2), a3, a4) } }
+        if t.secureRemove != nil { c.pointee.secureRemove = { a0, a1, a2, a3 in HostGlue.t_storage!.secureRemove!(HostGlue.string(a0), HostGlue.string(a1), a2, a3) } }
     }
 
     // ---- HostSocket (socket.d.ts)

@@ -6,7 +6,7 @@
 // tappable links) are attribute ranges + glyph positions here, which UILabel never exposes.
 //
 // The model, the same on every host: a paragraph's lines are `lineHeight` tall each (the record's,
-// always set: the core resolves `normal` = fontSize × 1.2), the box is lineHeight × lines (the yoga measure),
+// always set: the core resolves `normal` = fontSize × 1.2), the box is lineHeight × lines (the measure),
 // and a line's glyphs are centred in the line box by ascent + descent — the CSS half-leading rule
 // Android's ExactLineHeightSpan and the desktop apply. A lineHeight SHORTER than the font keeps the
 // box at lineHeight and lets the glyphs overflow it, half above and half below, visibly: the label is
@@ -15,8 +15,9 @@
 // Wrapping is CTTypesetter's (word breaks, a word longer than the line breaks inside it, `\n` is a
 // hard break); lineClamp keeps the first N lines and, unless textOverflow is clip, ends the last one
 // with an ellipsis over everything cut. letterSpacing is the kern attribute (after every glyph, the
-// CSS / Canvas2D width). Underline / strikethrough are rects at the desktop's positions. The padding
-// is the core's (the yoga padding): the label draws inside it, the measure reports the content.
+// CSS / Canvas2D width). Underline / strikethrough are rects at the desktop's positions. The inset
+// is the core's content box (the padding and the border): the label draws inside it, the measure
+// reports the content.
 //
 // The layout (the CTLines) is computed once per (content, style, width) and reused by the measure
 // and the draw; the bitmap is the layer's, redrawn only on a change — a scroll composites it.
@@ -217,7 +218,7 @@ final class TextLabel: UIView {
     var clipsOverflow = false { didSet { if clipsOverflow != oldValue { invalidate() } } }
     /// textWrap: how a paragraph breaks into lines (see `lines(maxWidth:)`).
     var textWrap: CuiPaint.TextWrap = .wrap { didSet { if textWrap != oldValue { invalidate() } } }
-    /// The core's padding: the text lays out and draws inside it.
+    /// The core's content box (the padding and the border): the text lays out and draws inside it.
     var inset = UIEdgeInsets.zero { didSet { if inset != oldValue { setNeedsDisplay() } } }
     /// The paragraph's leaf runs in order (rich text), nil = the plain string: `content` in the
     /// label's own style. A change of a run's string, font or spacing re-lays the paragraph; of its
@@ -620,7 +621,7 @@ final class TextLabel: UIView {
         return out
     }
 
-    /// The yoga measure: the widest line and lineHeight × lines within the width constraint (mode
+    /// The measure: the widest line and lineHeight × lines within the width constraint (mode
     /// 0 / NaN = unconstrained). The height constraint never cuts lines: overflow is visible, as CSS.
     func measure(width: Float, widthMode: UInt8, height: Float, heightMode: UInt8) -> CGSize {
         let constraint = widthMode == 0 || width.isNaN ? CGFloat.infinity : CGFloat(width)

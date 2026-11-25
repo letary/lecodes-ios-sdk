@@ -351,9 +351,9 @@ class ScrollContainerView: TouchScrollView, UIScrollViewDelegate, SheetScrollabl
     }
 }
 
-/// The vlist's view: the core owns the window (creator-ui vlist.cpp) — this view drives it with
+/// The vlist's view: the core owns the window (engines/ui vlist.rs) — this view drives it with
 /// the scroll position (physical = logical px here) and its layout, and places each mounted item
-/// at the core's offset (the items are detached yoga roots under the list node, not yoga
+/// at the core's offset (the items are detached layout roots under the list node, not layout
 /// children). A core-initiated scroll (anchoring, a clamp) is buffered and applied after the
 /// content height of the same pass, with the echo back into the core suppressed; a user command
 /// animates. vlistOnScroll may re-enter JS synchronously (the SDK mounts inside the sync).
@@ -377,7 +377,7 @@ final class VListView: ScrollContainerView {
             let top = CGFloat(CreatorUI.vlistItemOffset(node.id, itemRoot: child.id))
             guard top.isFinite else { continue }
             let at = child.view.placement
-            // the box the walk applied — Yoga's (the row is mounted: its node is live) before the first walk
+            // the box the walk applied — the engine's (the row is mounted: its node is live) before the first walk
             let o = child.lastLayout?.origin ?? LayoutBatch.read(child.id).origin
             let f = CGRect(x: o.x.isFinite ? o.x : 0, y: top + (o.y.isFinite ? o.y : 0), width: at.width, height: at.height)
             if at != f {

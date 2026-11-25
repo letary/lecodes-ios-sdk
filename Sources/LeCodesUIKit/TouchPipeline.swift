@@ -219,7 +219,12 @@ enum HeldTouches {
 
     /// `owner` took a pointer that landed on `hit` (nil = on the owner).
     static func began(_ pointerId: Int32, hit: UIView?, owner: UIView & PointerTarget) {
-        holds[pointerId] = Hold(hit: hit ?? owner, owner: owner)
+        // Two statements, not `hit ?? owner`: Swift 6.4.2 (Xcode 27.2) crashes on that expression
+        // when it optimizes this function (SIL verification, OwnershipModelEliminator), so no
+        // Release build of the package compiled there.
+        var hold = Hold(hit: owner, owner: owner)
+        if let hit { hold.hit = hit }
+        holds[pointerId] = hold
     }
 
     /// The pointer ended or was cancelled.

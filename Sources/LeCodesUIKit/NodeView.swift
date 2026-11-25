@@ -13,8 +13,10 @@
 // The backdrop (`backdropBlur` / `glass`, docs/plans/backdrop-plan.md): one UIVisualEffectView, a
 // UIGlassEffect where `glass` is drawn (iOS 26, built with the iOS 26 SDK) — it wins over the blur,
 // the background color is its tint and never a fill, a button's is interactive (`view is
-// ButtonView`: the one node kind that claims its box for touches) — else `UIBlurEffect(.regular)`
-// for any radius > 0 (rule 5 of the plan: UIKit has no public blur radius, and `.regular` is the
+// ButtonView`: the one node kind that claims its box for touches), light or dark by the node's
+// `colorScheme` (system or not set = the device's) — else `UIBlurEffect(.regular)`, always its
+// light variant whatever the scheme and the device (the dark one veils near-black; the glass
+// fallback below iOS 26 is this blur too), for any radius > 0 (rule 5 of the plan: UIKit has no public blur radius, and `.regular` is the
 // style with the thinnest tint — measured on 2026-11-09 against Android's exact Gaussian; the
 // system materials blur the same ~24 pt and veil far more). It is painted
 // UNDER the node's own background: the view layer's own color and contents paint under every
@@ -39,7 +41,7 @@
 // layoutSublayers call it) and the structure (`didMoveToSuperview` of each node view class,
 // `reorder` for the moves within a parent).
 //
-// NodeView, the container's view, adds the hit-test rule: yoga-sized containers never clip, so a
+// NodeView, the container's view, adds the hit-test rule: layout-sized containers never clip, so a
 // child can sit outside its parent's box, and UIKit's default bounds test would drop the touch at
 // the PARENT — with no background on either view nothing hints where the real box ends, so a
 // button would only respond where its content is. `point(inside:)` is widened by the subviews' own
@@ -96,6 +98,8 @@ public final class BoxPaint {
     private var backdrop = Backdrop.none
     private var effectView: UIVisualEffectView?
     private var colorLayer: CALayer?
+    /// The node's `colorScheme` as a style (Paint.interfaceStyle): the glass's.
+    private var schemeStyle: UIUserInterfaceStyle = .unspecified
     private var radius = Paint.Corners()
     /// The shadows, both sides; nil until the first non-empty list.
     private var shadows: BoxShadows?
@@ -120,7 +124,9 @@ public final class BoxPaint {
     /// The node's Paint moved (PaintBatch): sync the layer.
     func apply(_ p: Paint, dirty r: PaintRecord) {
         typealias B = CuiPaint.Bit
+        if r.dirty(B.colorScheme) { schemeStyle = p.interfaceStyle }
         if r.dirty(B.backgroundColor) || r.dirty(B.backdropBlur) || r.dirty(B.glass) { applyBackdrop(p) }
+        else if r.dirty(B.colorScheme) { styleEffectView() }   // the scheme alone: the effect there takes it
         // Through UIKit's `alpha`, not the layer's `opacity` (the same value — `alpha` reads it): UIKit
         // learns of a CHANGE only in the setter, and the glass under an ancestor follows it. A glass
         // view that enters the window while an ancestor is at 0 — a screen root re-mounted at a
@@ -277,6 +283,7 @@ public final class BoxPaint {
                 // A material is rounded only by the clip; glass shapes itself from the corner
                 // radius (the same pixels at rest, probed) and its press stretch must not be cut.
                 ev.clipsToBounds = !BoxPaint.isGlass(want)
+                styleEffectView()
             }
         }
         CATransaction.begin()
@@ -321,6 +328,16 @@ public final class BoxPaint {
         (view as? NodeView)?.backdropView = ev
         effectView = ev
         return ev
+    }
+
+    /// The effect view's light / dark look. Glass takes the node's `colorScheme` (`.unspecified` —
+    /// system or not set — follows the device). The blur is the LIGHT `.regular` whatever the
+    /// scheme and the system appearance: the adaptive material's dark variant is a dense dark veil —
+    /// under a card's own dark tint the frosted card went near-black (iOS 18.6 and 27.2, dark
+    /// appearance; the glass fallback on iOS < 26 is this blur) — and `backdropBlur` is the same
+    /// blur on every platform (backdrop-plan.md "colorScheme"): a darker card darkens its own color.
+    private func styleEffectView() {
+        effectView?.overrideUserInterfaceStyle = BoxPaint.isGlass(backdrop) ? schemeStyle : .light
     }
 
     private static func effect(_ b: Backdrop) -> UIVisualEffect? {

@@ -79,7 +79,7 @@ final class PagerView: TouchScrollView, UIScrollViewDelegate, SystemBackSwipeDel
     @available(*, unavailable) required init?(coder: NSCoder) { nil }
 
     /// The pager node still backs a live runtime instance: no `Core.pager*` call with a freed id
-    /// (yoga recycles addresses — a pager of the NEXT screen could answer).
+    /// (the runtime's pager map no longer holds it: every answer would be a zero).
     private var alive: Bool { node.map { !$0.isRemoved } ?? false }
     private var id: Int { node?.id ?? 0 }
     private func pageNode(_ tab: Int, _ pos: Int) -> UINode? { Nodes[Core.pagerPageNode(id, tab: tab, pos: pos)] }
