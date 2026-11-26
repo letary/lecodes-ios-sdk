@@ -23,14 +23,15 @@ public enum LeCodesShell {
     /// called on the main queue when the launch screen may go (the shell controller takes it down
     /// from there): right after the bundle runs too — unless the bundle's top level called
     /// `app.splash.hold()`, then at `app.splash.hide()`, at most `splashHoldTimeout` seconds later
-    /// (SplashHold). `embeddedAt` / `source` default to the app's
+    /// (SplashHold); its argument is true when an animated launch screen is to go at once, not
+    /// after its pass (SplashHold's `cut`). `embeddedAt` / `source` default to the app's
     /// `App/Resources/app.js` and `LeCodesUpdater.sourceURL` (the source the app set for itself, else
     /// Info.plist's `LeCodesUpdateURL`). False when there
     /// is no bundle to run (the shell was never synced) — nothing ran, neither callback is called.
     @discardableResult
     public static func boot(_ engine: LeCodesEngine, embeddedAt: URL? = nil, source: URL? = LeCodesUpdater.sourceURL,
                             firstLaunchTimeout: TimeInterval = 5, onReady: (() -> Void)? = nil,
-                            onSplashDrop: (() -> Void)? = nil) -> Bool {
+                            onSplashDrop: ((_ cut: Bool) -> Void)? = nil) -> Bool {
         LeCodesUpdater.isShell = true
         // the files this build carries, for a bundle that names them by url (one taken over the air)
         EmbeddedAssets.attach { [weak engine] name in engine?.onFetchLocal(name) }
@@ -41,7 +42,7 @@ public enum LeCodesShell {
             hold.run({
                 engine.run(withEngineBoot(code))
                 engine.resume()
-            }, drop: { onSplashDrop?() })
+            }, drop: { cut in onSplashDrop?(cut) })
             onReady?()
         }
     }
@@ -126,29 +127,31 @@ public enum LeCodesShell {
 /// The launch screen past the bundle's start — the twin of Android's LeCodesShell.SplashHold: `run`
 /// evaluates the bundle and then calls `drop` (the launch screen goes) — at once, or, when the
 /// bundle called `hold()` during that evaluation, at `hide()` or after `timeout` seconds, whichever
-/// is first. `drop` is called exactly once. `hold()` is honoured only while the launch screen is
+/// is first. `drop` is called exactly once — with `cut` when the app itself asked for the launch
+/// screen to go NOW (a `hide()` of an open hold without `waitForAnimation`): an animated one then
+/// leaves in the middle of its pass. `hold()` is honoured only while the launch screen is
 /// still up (during the evaluation, or while an earlier hold is open): a later call holds nothing
 /// and says so. Touched on the main queue only, hence unchecked.
 final class SplashHold: @unchecked Sendable {
     private let timeout: TimeInterval
     private var running = false
     private var held = false
-    private var drop: (() -> Void)?
+    private var drop: ((_ cut: Bool) -> Void)?
     private var limit: DispatchWorkItem?
 
     init(timeout: TimeInterval = LeCodesShell.splashHoldTimeout) { self.timeout = timeout }
 
-    func run(_ bundle: () -> Void, drop: @escaping () -> Void) {
+    func run(_ bundle: () -> Void, drop: @escaping (_ cut: Bool) -> Void) {
         running = true
         held = false
         bundle()
         running = false
-        guard held else { drop(); return }
+        guard held else { drop(false); return }
         self.drop = drop
         let limit = DispatchWorkItem { [weak self] in
             guard let self, self.drop != nil else { return }
             print("LeCodes: app.splash.hold — no app.splash.hide() in \(self.timeout) s, the launch screen goes")
-            self.hide()
+            self.hide(waitForAnimation: true)
         }
         self.limit = limit
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, timeout), execute: limit)
@@ -160,13 +163,13 @@ final class SplashHold: @unchecked Sendable {
         return true
     }
 
-    func hide() {
+    func hide(waitForAnimation: Bool = false) {
         held = false
         guard let go = drop else { return }
         drop = nil
         limit?.cancel()
         limit = nil
-        go()
+        go(!waitForAnimation)
     }
 }
 
@@ -219,7 +222,7 @@ open class LeCodesShellViewController: LeCodesViewController {
         mountLaunchScreen()
         configure(engine)
         if !LeCodesShell.boot(engine, embeddedAt: embeddedBundle, source: updateSource, firstLaunchTimeout: firstLaunchTimeout,
-                              onSplashDrop: { [weak self] in self?.dropLaunchScreen() }) {
+                              onSplashDrop: { [weak self] cut in self?.dropLaunchScreen(cut: cut) }) {
             print("LeCodes: no bundled app.js — run `lecodes app sync`")
         }
     }
@@ -252,8 +255,9 @@ open class LeCodesShellViewController: LeCodesViewController {
     /// window — by then the engine's own display link has ticked the bundle's first frame onto the
     /// screen, so the root's black is never shown between the two.
     /// An animated launch screen (app.json "splash.animation") stays for one whole pass of its
-    /// animation at least, then fades away over the app.
-    private func dropLaunchScreen() {
+    /// animation at least, then fades away over the app — with `cut` (`app.splash.hide()`) it
+    /// fades at once, the pass going on under the fade.
+    private func dropLaunchScreen(cut: Bool) {
         guard let screen = launchScreen else { return }
         launchScreen = nil
         let animation = splashAnimation
@@ -265,10 +269,11 @@ open class LeCodesShellViewController: LeCodesViewController {
         }
         AfterFrames.start(2, of: view) {
             guard let animation else { remove(); return }
-            animation.whenPlayed {
+            let fade = {
                 UIView.animate(withDuration: animation.fadeOut / 1000, animations: { screen.view.alpha = 0 },
                                completion: { _ in remove() })
             }
+            if cut { fade() } else { animation.whenPlayed(fade) }
         }
     }
 }

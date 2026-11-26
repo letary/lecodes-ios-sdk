@@ -1,19 +1,20 @@
 // The OS permissions: ONE service behind `_creatorDevice.queryPermission / requestPermission`
 // (the SDK's camera users, `permissions` in an app) and `engine.permissions` for the plugins (the
 // generated glue of a method tagged `@permission` asks here before the call; a half whose need
-// depends on its arguments — webrtc's getUserMedia — asks by hand, the same way).
+// depends on its arguments — rtc's getUserMedia — asks by hand, the same way).
 //
-// The core carries the askers of the camera, the microphone, the location and the notifications
-// (alert, sound, badge: what local notifications' `schedule` asks through here). A kind whose
-// framework must not be linked into every app (speech: the Speech framework) is REGISTERED by the
-// plugin that brings it (`register(.speech, …)`); until then the host says it has no asker.
+// The core carries the askers of the camera, the microphone and the notifications (alert, sound,
+// badge: what local notifications' `schedule` asks through here). A kind whose framework must not
+// be linked into every app is REGISTERED by the plugin that brings it — speech (the Speech
+// framework) by `speech`, location (CoreLocation) by `geolocation`: `register(.speech, …)`; until
+// then the host says it has no asker. Apple reads those APIs off the binary and demands their
+// purpose string at upload (ITMS-90683), run or not: no CLLocationManager in this package.
 //
 // Requests are queued: two features asking at once get one dialog after the other, one kind asked
 // twice while its dialog is up gets one dialog and two answers. iOS asks exactly once — a request
 // for a granted or denied kind completes at once with that state (the app's way out is
 // `openSettings`).
 import AVFoundation
-import CoreLocation
 import UIKit
 import UserNotifications
 
@@ -42,7 +43,6 @@ public struct PermissionAsker {
 
 public final class Permissions {
     private var askers: [PermissionKind: PermissionAsker] = [:]
-    private let location = LocationAsker()
     /// The dialog up now and who waits for it, then the kinds behind it.
     private var current: (kind: PermissionKind, waiters: [(PermissionState) -> Void])?
     private var queue: [(kind: PermissionKind, then: (PermissionState) -> Void)] = []
@@ -50,7 +50,6 @@ public final class Permissions {
     init() {
         askers[.camera] = Self.capture(.video)
         askers[.microphone] = Self.capture(.audio)
-        askers[.location] = PermissionAsker(query: { [location] in location.state }, request: { [location] then in location.request(then) })
         askers[.notifications] = Self.notifications()
     }
 
@@ -168,35 +167,4 @@ public final class Permissions {
 private final class SettingsRead {
     let done = DispatchSemaphore(value: 0)
     var status: UNAuthorizationStatus?
-}
-
-/// Location (while in use): CLLocationManager's status, its dialog answered through the delegate.
-private final class LocationAsker: NSObject, CLLocationManagerDelegate {
-    private lazy var manager: CLLocationManager = {
-        let m = CLLocationManager()
-        m.delegate = self
-        return m
-    }()
-    private var pending: ((PermissionState) -> Void)?
-
-    var state: PermissionState {
-        switch manager.authorizationStatus {
-        case .authorizedWhenInUse, .authorizedAlways: return .granted
-        case .notDetermined: return .prompt
-        default: return .denied
-        }
-    }
-
-    func request(_ then: @escaping (PermissionState) -> Void) {
-        pending = then
-        manager.requestWhenInUseAuthorization()
-    }
-
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        // Fires once at the manager's creation too (still undetermined): not an answer.
-        let now = state
-        guard now != .prompt, let then = pending else { return }
-        pending = nil
-        then(now)
-    }
 }

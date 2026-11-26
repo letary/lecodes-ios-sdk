@@ -163,7 +163,7 @@ public protocol HostApp: AnyObject {
     /// Optional slot: nil = absent.
     var holdSplash: (() -> Bool)? { get }
     /// Optional slot: nil = absent.
-    var hideSplash: (() -> Void)? { get }
+    var hideSplash: ((Bool) -> Void)? { get }
     /// Optional slot: nil = absent.
     var worldChange: ((String?, Bool) -> Void)? { get }
     /// Optional slot: nil = absent.
@@ -179,7 +179,7 @@ public extension HostApp {
     var updateSource: (() -> String)? { nil }
     var setUpdateSource: ((String) -> Bool)? { nil }
     var holdSplash: (() -> Bool)? { nil }
-    var hideSplash: (() -> Void)? { nil }
+    var hideSplash: ((Bool) -> Void)? { nil }
     var worldChange: ((String?, Bool) -> Void)? { nil }
     var exit: (() -> Void)? { nil }
 }

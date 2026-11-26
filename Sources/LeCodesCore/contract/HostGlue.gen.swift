@@ -166,7 +166,7 @@ enum HostGlue {
         if t.updateSource != nil { c.pointee.updateSource = { return HostGlue.cString(HostGlue.t_app!.updateSource!()) ?? strdup("") } }
         if t.setUpdateSource != nil { c.pointee.setUpdateSource = { a0 in return HostGlue.t_app!.setUpdateSource!(HostGlue.string(a0)) } }
         if t.holdSplash != nil { c.pointee.holdSplash = { return HostGlue.t_app!.holdSplash!() } }
-        if t.hideSplash != nil { c.pointee.hideSplash = { HostGlue.t_app!.hideSplash!() } }
+        if t.hideSplash != nil { c.pointee.hideSplash = { a0 in HostGlue.t_app!.hideSplash!(a0) } }
         if t.worldChange != nil { c.pointee.worldChange = { a0, a1 in HostGlue.t_app!.worldChange!(a0.map { String(cString: $0) }, a1) } }
         if t.exit != nil { c.pointee.exit = { HostGlue.t_app!.exit!() } }
     }

@@ -39,5 +39,5 @@ final class AppHost: HostApp {
     // app.splash — the launch screen a SHELL's boot holds (SplashHold of LeCodesShell); no such
     // launch in any other app of this SDK, so nothing is held there.
     var holdSplash: (() -> Bool)? { { LeCodesShell.splash?.hold() ?? false } }
-    var hideSplash: (() -> Void)? { { LeCodesShell.splash?.hide() } }
+    var hideSplash: ((Bool) -> Void)? { { waitForAnimation in LeCodesShell.splash?.hide(waitForAnimation: waitForAnimation) } }
 }
