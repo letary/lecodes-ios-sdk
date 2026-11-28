@@ -374,6 +374,8 @@ public final class LeCodesEngine {
         currentWorldTrusted = trusted
         // The orientation lock is per world: the launcher always comes back unlocked.
         OrientationLock.apply(.auto)
+        // So is keep-awake (app.setKeepAwake): the next world starts on the system's idle timer.
+        UIApplication.shared.isIdleTimerDisabled = false
         // So are the gl facade's frame bodies: a plugin's session is the outgoing world's.
         gl.worldChanged()
         onWorldChanged?(projectUuid, trusted)

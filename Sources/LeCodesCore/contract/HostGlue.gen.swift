@@ -161,6 +161,7 @@ enum HostGlue {
         if t.isOnline != nil { c.pointee.isOnline = { return HostGlue.t_app!.isOnline!() } }
         if t.openUrl != nil { c.pointee.openUrl = { a0 in HostGlue.t_app!.openUrl!(HostGlue.string(a0)) } }
         if t.setOrientation != nil { c.pointee.setOrientation = { a0 in HostGlue.t_app!.setOrientation!(HostGlue.string(a0)) } }
+        if t.setKeepAwake != nil { c.pointee.setKeepAwake = { a0 in HostGlue.t_app!.setKeepAwake!(a0) } }
         if t.appVersion != nil { c.pointee.appVersion = { return HostGlue.cString(HostGlue.t_app!.appVersion!()) ?? strdup("") } }
         if t.appBuild != nil { c.pointee.appBuild = { return HostGlue.t_app!.appBuild!() } }
         if t.updateSource != nil { c.pointee.updateSource = { return HostGlue.cString(HostGlue.t_app!.updateSource!()) ?? strdup("") } }

@@ -18,6 +18,9 @@ final class AppHost: HostApp {
     }
     /// "landscape" | "portrait" | "auto" (unknown → auto). The JS thread is the main thread.
     var setOrientation: ((String) -> Void)? { { mode in OrientationLock.apply(OrientationLock(rawValue: mode) ?? .auto) } }
+    /// app.setKeepAwake: the idle timer that dims and locks the screen. App-wide and foreground-only
+    /// by UIKit's own rules; no permission. The JS thread is the main thread.
+    var setKeepAwake: ((Bool) -> Void)? { { enabled in UIApplication.shared.isIdleTimerDisabled = enabled } }
     var worldChange: ((String?, Bool) -> Void)? { { [weak self] uuid, trusted in self?.engine?.onWorldChange(uuid, trusted) } }
     // app.host.version / app.host.build — the installed app's CFBundleShortVersionString /
     // CFBundleVersion (what a `lecodes app` shell takes from app.json). An OTA bundle reads them to

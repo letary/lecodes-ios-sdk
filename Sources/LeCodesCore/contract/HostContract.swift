@@ -153,6 +153,8 @@ public protocol HostApp: AnyObject {
     /// Optional slot: nil = absent.
     var setOrientation: ((String) -> Void)? { get }
     /// Optional slot: nil = absent.
+    var setKeepAwake: ((Bool) -> Void)? { get }
+    /// Optional slot: nil = absent.
     var appVersion: (() -> String)? { get }
     /// Optional slot: nil = absent.
     var appBuild: (() -> Int32)? { get }
@@ -174,6 +176,7 @@ public extension HostApp {
     var isOnline: (() -> Bool)? { nil }
     var openUrl: ((String) -> Void)? { nil }
     var setOrientation: ((String) -> Void)? { nil }
+    var setKeepAwake: ((Bool) -> Void)? { nil }
     var appVersion: (() -> String)? { nil }
     var appBuild: (() -> Int32)? { nil }
     var updateSource: (() -> String)? { nil }

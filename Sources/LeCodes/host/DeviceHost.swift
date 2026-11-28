@@ -55,28 +55,26 @@ final class DeviceHost: HostDevice {
         }
     }
     // The permissions: the engine's one service (plugins ask it too — services/Permissions.swift).
+    // A kind nobody on this host registered (its plugin is not installed) answers "granted", as a
+    // host without dialogs does: no dialog of this host stands between the app and the feature —
+    // the feature's own `supported` says it is not here.
     var queryPermission: ((String, JSCallback, JSCallback) -> Void)? {
         { [weak self] kind, onComplete, onReject in
-            guard let permissions = self?.engine?.permissions, let k = Self.kind(kind, permissions) else {
-                return Core.reject(onComplete, reject: onReject, message: "\(kind): not a permission this host asks for")
-            }
-            Core.resolve(onComplete, reject: onReject, [.string(permissions.query(k).rawValue)])
+            guard let permissions = self?.engine?.permissions else { return Core.reject(onComplete, reject: onReject, message: "the engine is gone") }
+            let k = PermissionKind(kind)
+            let state = permissions.knows(k) ? permissions.query(k) : .granted
+            Core.resolve(onComplete, reject: onReject, [.string(state.rawValue)])
         }
     }
     var requestPermission: ((String, JSCallback, JSCallback) -> Void)? {
         { [weak self] kind, onComplete, onReject in
-            guard let permissions = self?.engine?.permissions, let k = Self.kind(kind, permissions) else {
-                return Core.reject(onComplete, reject: onReject, message: "\(kind): not a permission this host asks for")
-            }
+            guard let permissions = self?.engine?.permissions else { return Core.reject(onComplete, reject: onReject, message: "the engine is gone") }
+            let k = PermissionKind(kind)
+            guard permissions.knows(k) else { return Core.resolve(onComplete, reject: onReject, [.string(PermissionState.granted.rawValue)]) }
             permissions.request(k) { state in Core.resolve(onComplete, reject: onReject, [.string(state.rawValue)]) }
         }
     }
     var openSettings: (() -> Void)? { { [weak self] in self?.engine?.permissions.openSettings() } }
-
-    private static func kind(_ wire: String, _ permissions: Permissions) -> PermissionKind? {
-        guard let k = PermissionKind(rawValue: wire), permissions.knows(k) else { return nil }
-        return k
-    }
 
     func dispose() { motion.stop() }
 }

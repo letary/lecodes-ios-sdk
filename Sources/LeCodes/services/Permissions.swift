@@ -3,12 +3,17 @@
 // generated glue of a method tagged `@permission` asks here before the call; a half whose need
 // depends on its arguments — rtc's getUserMedia — asks by hand, the same way).
 //
-// The core carries the askers of the camera, the microphone and the notifications (alert, sound,
-// badge: what local notifications' `schedule` asks through here). A kind whose framework must not
-// be linked into every app is REGISTERED by the plugin that brings it — speech (the Speech
-// framework) by `speech`, location (CoreLocation) by `geolocation`: `register(.speech, …)`; until
-// then the host says it has no asker. Apple reads those APIs off the binary and demands their
-// purpose string at upload (ITMS-90683), run or not: no CLLocationManager in this package.
+// A KIND is a name. The core carries the askers of the camera, the microphone and the notifications
+// (alert, sound, badge: what local notifications' `schedule` asks through here). Any other kind is
+// BROUGHT by a plugin: its manifest declares it (`permissions` of lecodes-plugin.json) and its half
+// hands the asker over where its channel registers — the generated `register` takes one per kind
+// and calls `register(_:_:)` here. Two reasons it is the plugin's: a new kind then touches nothing
+// in this package, and Apple reads the frameworks off the binary and demands their purpose string
+// at upload (ITMS-90683), run or not — no CLLocationManager, no CNContactStore in this package.
+//
+// A kind nobody registered is never granted to a half (`query` says `.denied`); the app's own door
+// answers "granted" for one (DeviceHost: no dialog of this host stands between the app and a
+// feature it does not have).
 //
 // Requests are queued: two features asking at once get one dialog after the other, one kind asked
 // twice while its dialog is up gets one dialog and two answers. iOS asks exactly once — a request
@@ -18,8 +23,17 @@ import AVFoundation
 import UIKit
 import UserNotifications
 
-public enum PermissionKind: String, CaseIterable {
-    case camera, microphone, location, speech, notifications
+/// A kind, by its name on the wire. The host's own are the constants; a plugin's is written as its
+/// name (`"calendar"`: a kind is a string literal wherever one is expected).
+public struct PermissionKind: RawRepresentable, Hashable, ExpressibleByStringLiteral {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public init(_ name: String) { self.rawValue = name }
+    public init(stringLiteral value: String) { self.rawValue = value }
+
+    public static let camera: PermissionKind = "camera"
+    public static let microphone: PermissionKind = "microphone"
+    public static let notifications: PermissionKind = "notifications"
 }
 
 public enum PermissionState: String {
@@ -53,7 +67,9 @@ public final class Permissions {
         askers[.notifications] = Self.notifications()
     }
 
-    /// The asker of a kind the core does not carry (a plugin's, registered with its halves).
+    /// The asker of a kind the core does not carry (a plugin's, handed over where its channel
+    /// registers). Registered twice (two plugins that bring one kind, a world made again), the last
+    /// one answers.
     public func register(_ kind: PermissionKind, _ asker: PermissionAsker) { askers[kind] = asker }
 
     /// Whether this host can answer for `kind` (its asker is the core's, or a plugin registered one).
